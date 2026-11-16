@@ -50,6 +50,27 @@ def _analyze(args):
         print(report)
 
 
+def _schedule(args):
+    from dataclasses import asdict
+
+    from tumo_engine.io.dxf_reader import read_dxf
+    from tumo_engine.preprocess import bind_xrefs, primitives, unit_factor
+    from tumo_engine.tables import read_opening_schedule
+
+    source = args.drawing.resolve()
+    drawing = read_dxf(source)
+    warnings = bind_xrefs(drawing, source, source.parent)
+    items, parsing_warnings = primitives(drawing, unit_factor(drawing))
+    rows = read_opening_schedule(items)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(args.output, {
+        "units": "mm",
+        "openings": [asdict(row) for row in rows],
+        "warnings": list(dict.fromkeys([*warnings, *parsing_warnings])),
+    })
+    print(args.output)
+
+
 def _run(args):
     from tumo_engine.export.model import TumoModel
     from tumo_engine.pipeline import run
@@ -92,6 +113,10 @@ def main(argv=None):
     analyze.add_argument("drawing", type=Path)
     analyze.add_argument("-o", "--output", type=Path, help="保存中文报告。")
     analyze.set_defaults(handler=_analyze)
+    schedule = commands.add_parser("schedule", help="读取门窗表，并输出毫米尺寸和来源句柄。")
+    schedule.add_argument("drawing", type=Path)
+    schedule.add_argument("-o", "--output", type=Path, default=Path("out/opening-schedule.json"))
+    schedule.set_defaults(handler=_schedule)
     run = commands.add_parser("run", help="识别 DXF、目录或 JSON 任务。")
     run.add_argument("input", type=Path)
     run.add_argument("-o", "--output", type=Path)
