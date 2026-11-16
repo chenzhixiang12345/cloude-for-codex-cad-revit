@@ -33,8 +33,12 @@ internal static class ModelBuilder
             var existingGrids = new FilteredElementCollector(document).OfClass(typeof(Grid))
                 .Cast<Grid>().ToDictionary(grid => grid.Name, StringComparer.OrdinalIgnoreCase);
 
+            // Give the new grids room for plan cut planes above and below the generated levels.
+            var gridPadding = RevitApi.Feet(2000);
+            var gridExtents = (Bottom: defaultBase.ProjectElevation - gridPadding,
+                Top: levels.Values.Max(level => level.ProjectElevation) + gridPadding);
             foreach (var grid in model.Grids)
-                CreateGrid(document, grid, existingGrids, ids, model, sheets);
+                CreateGrid(document, grid, existingGrids, ids, model, sheets, gridExtents);
 
             var types = new ModelTypes(document, log);
             var dimensions = candidates.ToDictionary(e => e.Id, e => GetExtent(e, levels, defaultBase));
@@ -117,7 +121,7 @@ internal static class ModelBuilder
     }
 
     private static void CreateGrid(Document document, ModelGrid data, Dictionary<string, Grid> existing,
-        TuMoIds ids, TuMoModel model, Dictionary<string, Sheet> sheets)
+        TuMoIds ids, TuMoModel model, Dictionary<string, Sheet> sheets, (double Bottom, double Top) verticalExtents)
     {
         var transform = TransformFor(data.Source, sheets);
         var line = Line.CreateBound(Point(data.Start, 0, model, transform), Point(data.End, 0, model, transform));
@@ -130,6 +134,7 @@ internal static class ModelBuilder
         {
             grid = Grid.Create(document, line);
             grid.Name = data.Label;
+            grid.SetVerticalExtents(verticalExtents.Bottom, verticalExtents.Top);
             existing.Add(data.Label, grid);
         }
 
