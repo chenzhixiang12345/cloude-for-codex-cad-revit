@@ -15,6 +15,7 @@ grid:
   label_pattern: '^(?:[A-Z]{1,2}|\d{1,3})(?:[/.-](?:[A-Z]{1,2}|\d{1,3}))?$'
   minimum_length: 1500
   end_search: 1400
+  plan_margin: 5000
   lateral_tolerance: 550
   direction_tolerance_deg: 0.4
   collinear_tolerance: 10

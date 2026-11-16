@@ -7,6 +7,7 @@ from unicodedata import normalize
 
 from ezdxf import bbox
 
+from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import Bounds, layer_key, point, viewport_bounds
 
 TITLE = re.compile(r"(?:平面图|立面图|剖面图|详图|图纸目录|图纸清单|floor\s*plan|schedule)", re.I)
@@ -182,3 +183,19 @@ def directory_entries(doc):
             if abs(title_pos.y - pos.y) < max(1.0, abs(title_pos.x - pos.x) * 0.15):
                 entries[number[1].upper()] = title
     return entries
+
+
+def catalog_title(drawing: Path, root: Path, number: str) -> str | None:
+    catalogs = sorted(
+        path for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".dxf" and sheet_kind(path.stem) == "directory"
+    )
+    catalogs.sort(key=lambda path: (path.parent != drawing.parent, discipline(path) != discipline(drawing)))
+    for path in catalogs:
+        try:
+            entries = directory_entries(read_dxf(path))
+        except ValueError:
+            continue
+        if number in entries:
+            return entries[number]
+    return None

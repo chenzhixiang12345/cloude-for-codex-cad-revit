@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 import re
 
-from shapely.geometry import LineString
+from shapely.geometry import LineString, MultiPoint
 
 from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import Bounds, bind_xrefs, primitives, unit_factor
@@ -17,7 +17,7 @@ from tumo_engine.recognize.grid import recognize_grids
 from tumo_engine.recognize.level import recognize_levels
 from tumo_engine.recognize.wall import recognize_walls
 from tumo_engine.rules import defaults
-from tumo_engine.sheets import discipline, drawing_sheets, input_drawing, sheet_kind
+from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
 
 
 def _stable_id(prefix, *values):
@@ -28,15 +28,18 @@ def _stable_id(prefix, *values):
 
 def _origin(grids):
     """Prefer the smallest numeric and alphabetic axes that cross."""
-    x_axes = sorted(
-        (grid for grid in grids if grid["label"].isdigit()), key=lambda grid: int(grid["label"]),
-    )
-    y_axes = sorted(
-        (grid for grid in grids if re.fullmatch(r"[A-Z]{1,2}", grid["label"])),
-        key=lambda grid: (len(grid["label"]), grid["label"]),
-    )
-    for x in x_axes:
-        for y in y_axes:
+    x_axes = []
+    y_axes = []
+    for grid in grids:
+        prefix, _, designation = grid["label"].rpartition("-")
+        if designation.isdigit():
+            x_axes.append((prefix, int(designation), grid))
+        elif re.fullmatch(r"[A-Z]{1,2}", designation):
+            y_axes.append((prefix, len(designation), designation, grid))
+    for x_prefix, _, x in sorted(x_axes, key=lambda row: row[:2]):
+        for y_prefix, _, _, y in sorted(y_axes, key=lambda row: row[:3]):
+            if x_prefix != y_prefix:
+                continue
             intersection = LineString((x["start"], x["end"])).intersection(LineString((y["start"], y["end"])))
             if not intersection.is_empty and intersection.geom_type == "Point":
                 return {"grid": [x["label"], y["label"]], "at": rounded(intersection.coords[0])}
@@ -61,6 +64,14 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
                            and sheet.bounds[1] <= cy <= sheet.bounds[3]), detected[0])
     else:
         sheet_info = detected[0]
+    if sheet_kind(sheet_info.title) == "unknown":
+        number = sheet_info.number
+        if number is None and (match := NUMBER.fullmatch(drawing.stem)):
+            number = match[1].upper()
+        if number and (title := catalog_title(drawing, root, number)):
+            sheet_info.number = number
+            sheet_info.title = title
+
     subject = discipline(drawing)
     if subject == "unknown" and sheet_kind(sheet_info.title) == "floor_plan":
         subject = "arch"
@@ -116,16 +127,30 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
 
     grids = recognize_grids(items, rules)
     labels = Counter()
+    original_labels = {grid["label"] for grid in grids}
+    used_labels = set(original_labels)
     for grid in sorted(grids, key=lambda row: (-row["confidence"], row["label"], row["start"], row["end"])):
         label = grid["label"]
-        if labels[label]:
-            issue(f"轴号 {label} 重复，建议检查相邻区域是否属于同一轴网。", at=grid["start"])
-            continue
         labels[label] += 1
-        grid["id"] = _stable_id("G", sheet_id, label)
+        if labels[label] > 1:
+            alias = f"{label}-{labels[label]}"
+            while alias in used_labels:
+                labels[label] += 1
+                alias = f"{label}-{labels[label]}"
+            used_labels.add(alias)
+            grid["label"] = alias
+            issue(f"轴号 {label} 有多段直线。当前段在 Revit 中命名为 {alias}。", at=grid["start"])
+        grid["id"] = _stable_id("G", sheet_id, grid["label"])
         grid["source"] = {"sheet": sheet_id, "handles": grid.pop("handles")}
         model["grids"].append(grid)
     model["project"]["origin"] = _origin(model["grids"])
+
+    if len(model["grids"]) >= 2:
+        axes = [p for grid in model["grids"] for p in (grid["start"], grid["end"])]
+        footprint = MultiPoint(axes).convex_hull
+        if footprint.area > 0:
+            scope = footprint.buffer(rules["grid"]["plan_margin"])
+            items = [item for item in items if scope.intersects(item.shape)]
 
     columns = recognize_columns(items, rules)
     walls = recognize_walls(items, columns, rules) if subject != "struct" else []

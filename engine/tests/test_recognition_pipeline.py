@@ -99,3 +99,88 @@ def test_prefers_repeated_story_plan_to_building_number(tmp_path):
     assert model["sheets"][0]["number"] == "A102"
     assert model["sheets"][0]["bounds"] == [10000, 0, 18000, 6000]
     assert model["levels"][0]["id"] == "L3"
+
+
+def test_retains_bent_axis_segments_and_ignores_other_xref_labels(tmp_path):
+    doc = ezdxf.new(units=4)
+    msp = doc.modelspace()
+    axis = "PLAN$0$AD-AXIS-AXIS"
+    bubble = "PLAN$0$AD-AXIS-CRCL"
+    for a, b in [((0, 0), (5000, 0)), ((5000, 0), (8000, 3000))]:
+        msp.add_line(a, b, dxfattribs={"layer": axis})
+    for p in [(0, 0), (8000, 3000)]:
+        msp.add_circle(p, 220, dxfattribs={"layer": bubble})
+        msp.add_text("A", dxfattribs={"insert": p, "layer": bubble})
+    msp.add_line((15, 100), (15, 4000), dxfattribs={"layer": "DETAIL$0$AD-AXIS-AXIS"})
+    p = (15, 105)
+    msp.add_text("B", dxfattribs={"insert": p, "layer": "AD-NOTE"})
+    path = tmp_path / "标准层平面图.dxf"
+    doc.saveas(path)
+    model = run(path)
+    assert {grid["label"] for grid in model["grids"]} == {"A", "A-2"}
+    assert all("axis:label:A" in grid["evidence"] for grid in model["grids"])
+
+
+def test_references_local_dxf_geometry(tmp_path):
+    external = ezdxf.new(units=4)
+    external.modelspace().add_lwpolyline(
+        [(0, 0), (3000, 0), (3000, 200), (0, 200)], close=True,
+        dxfattribs={"layer": "WALL"},
+    )
+    external.saveas(tmp_path / "referenced.dxf")
+
+    from ezdxf import xref
+
+    host = ezdxf.new(units=4)
+    xref.define(host, "ATTACHED", "referenced.dxf")
+    host.modelspace().add_blockref("ATTACHED", (5000, 7000))
+    path = tmp_path / "二层平面图.dxf"
+    host.saveas(path)
+    model = run(path)
+    assert len(model["elements"]) == 1
+    assert model["elements"][0]["geometry"]["start"] == [5000, 7100]
+
+
+def test_unavailable_xref_becomes_issue(tmp_path):
+    from ezdxf import xref
+
+    host = ezdxf.new(units=4)
+    xref.define(host, "ATTACHED", "missing.dxf")
+    host.modelspace().add_blockref("ATTACHED", (5000, 7000))
+    path = tmp_path / "二层平面图.dxf"
+    host.saveas(path)
+    assert any("外部参照未读取" in issue["message"] for issue in run(path)["issues"])
+
+
+def test_uses_drawing_catalog_for_title_missing_from_plan(tmp_path):
+    doc = ezdxf.new(units=4)
+    msp = doc.modelspace()
+    msp.add_text("A102", dxfattribs={"insert": (0, 0)})
+    msp.add_text("三层平面图", dxfattribs={"insert": (1000, 0)})
+    doc.saveas(tmp_path / "图纸目录.dxf")
+
+    doc = ezdxf.new(units=4)
+    plan_path = tmp_path / "A102.dxf"
+    doc.saveas(plan_path)
+    model = run(tmp_path)
+    assert model["sheets"][0]["file"] == "A102.dxf"
+    assert model["sheets"][0]["title"] == "三层平面图"
+    assert model["levels"][0]["id"] == "L3"
+
+
+def test_largest_active_viewport_selects_visible_model_area(tmp_path):
+    doc = ezdxf.new(units=4)
+    msp = doc.modelspace()
+    for start in (0, 10000):
+        msp.add_lwpolyline(
+            [(start, 0), (start + 3000, 0), (start + 3000, 200), (start, 200)],
+            close=True, dxfattribs={"layer": "WALL"},
+        )
+    layout = doc.layout()
+    layout.add_viewport(center=(100, 100), size=(100, 50), view_center_point=(11500, 0), view_height=2500)
+    path = tmp_path / "二层平面图.dxf"
+    doc.saveas(path)
+    model = run(path)
+    assert model["sheets"][0]["bounds"] == [9000, -1250, 14000, 1250]
+    assert len(model["elements"]) == 1
+    assert model["elements"][0]["geometry"]["start"] == [10000, 100]
