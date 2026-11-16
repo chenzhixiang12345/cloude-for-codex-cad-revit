@@ -91,16 +91,39 @@ def _run(args):
     print(output / "model.json")
 
 
-def _render(args):
+def _review_inputs(args):
     from tumo_engine.export.model import TumoModel
-    from tumo_engine.viz.review import render
 
     model = TumoModel.model_validate_json(args.model.read_text(encoding="utf-8-sig"))
     root = args.source
     source_manifest = args.model.with_name("sources.json")
     if root is None and source_manifest.is_file():
         root = Path(json.loads(source_manifest.read_text(encoding="utf-8"))["root"])
-    render(model.model_dump(mode="json", exclude_unset=True), args.output, root)
+    return model.model_dump(mode="json", exclude_unset=True), root
+
+
+def _render(args):
+    from tumo_engine.viz.review import render
+
+    model, root = _review_inputs(args)
+    render(model, args.output, root)
+
+
+def _render_dxf(args):
+    from tumo_engine.viz.review_dxf import write_review_dxf
+
+    model, root = _review_inputs(args)
+    if root is None:
+        raise ValueError("请用 --source 指定原始 DXF 或图纸目录。")
+    sheet = next((item for item in model["sheets"] if args.sheet in (None, item["id"])), None)
+    if sheet is None:
+        raise ValueError("识别结果中没有选定的图纸。")
+    source = root.resolve()
+    if source.is_dir():
+        source = (root / sheet["file"]).resolve()
+        if not source.is_relative_to(root.resolve()):
+            raise ValueError("图纸路径必须在原始图纸目录内。")
+    print(write_review_dxf(model, source, args.output, sheet_id=sheet["id"]))
 
 
 def main(argv=None):
@@ -127,6 +150,12 @@ def main(argv=None):
     render.add_argument("-o", "--output", type=Path, default=Path("out/viz"))
     render.add_argument("--source", type=Path, help="原始图纸或图纸根目录。")
     render.set_defaults(handler=_render)
+    vector = commands.add_parser("render-dxf", help="导出可在 Revit 里直接导入的矢量审图 DXF。")
+    vector.add_argument("model", type=Path)
+    vector.add_argument("-o", "--output", type=Path, default=Path("out/review.dxf"))
+    vector.add_argument("--source", type=Path, help="原始 DXF 或图纸根目录。")
+    vector.add_argument("--sheet", help="选择识别结果中的图纸 ID。默认用第一张。")
+    vector.set_defaults(handler=_render_dxf)
     args = parser.parse_args(argv)
     try:
         args.handler(args)
