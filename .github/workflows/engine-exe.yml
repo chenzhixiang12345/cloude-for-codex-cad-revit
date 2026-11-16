@@ -23,6 +23,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m eval.synthetic out/ci-synthetic --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./dist/tumo-engine.exe render-dxf out/ci-synthetic/recognized/model.json -o out/ci-synthetic/review.dxf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./dist/tumo-engine.exe schedule out/ci-synthetic/arch/standard-floor.dxf -o out/ci-synthetic/opening-schedule.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: tumo-engine-windows
