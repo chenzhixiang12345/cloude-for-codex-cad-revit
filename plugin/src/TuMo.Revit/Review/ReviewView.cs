@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Events;
 using TuMo.Core;
 using TuMo.Revit.Compat;
 using TuMo.Revit.Logging;
@@ -89,16 +90,68 @@ internal static class ReviewView
         try
         {
             uiDocument.ActiveView = result.View;
-            var window = uiDocument.GetOpenUIViews().FirstOrDefault(view => view.ViewId.Equals(result.View.Id));
-            if (result.Lower != null && result.Upper != null)
-                window?.ZoomAndCenterRectangle(result.Lower, result.Upper);
-            else
-                window?.ZoomToFit();
+            var application = uiDocument.Application;
+            var document = uiDocument.Document;
+            var viewId = result.View.Id;
+            var logPath = log.Path;
+            var attempts = 3;
+
+            // Revit may still be opening the UIView or fitting its initial extents during this command.
+            application.Idling += ZoomWhenReady;
+
+            void ZoomWhenReady(object? sender, IdlingEventArgs args)
+            {
+                application.Idling -= ZoomWhenReady;
+                try
+                {
+                    var active = application.ActiveUIDocument;
+                    if (active == null || !document.Equals(active.Document) || !viewId.Equals(active.ActiveView.Id))
+                        return;
+
+                    using var window = active.GetOpenUIViews().FirstOrDefault(view => view.ViewId.Equals(viewId));
+                    if (window == null)
+                    {
+                        if (--attempts > 0)
+                        {
+                            args.SetRaiseWithoutDelay();
+                            application.Idling += ZoomWhenReady;
+                        }
+                        else
+                        {
+                            RecordZoom(logPath, "无法缩放审图视图：新视图窗口没有就绪。");
+                        }
+                        return;
+                    }
+
+                    if (result.Lower != null && result.Upper != null)
+                        window.ZoomAndCenterRectangle(result.Lower, result.Upper);
+                    else
+                        window.ZoomToFit();
+                    RecordZoom(logPath, "已缩放审图视图。");
+                }
+                catch (Autodesk.Revit.Exceptions.ApplicationException error)
+                {
+                    RecordZoom(logPath, $"无法缩放审图视图：{error.Message}");
+                }
+            }
         }
         catch (Autodesk.Revit.Exceptions.ApplicationException error)
         {
             // The view is already committed. Users can open it in the project browser.
-            log.Write($"无法自动打开或缩放审图视图：{error.Message}");
+            log.Write($"无法自动打开审图视图：{error.Message}");
+        }
+    }
+
+    private static void RecordZoom(string path, string message)
+    {
+        // Idling runs after the command's RunLog is disposed.
+        try
+        {
+            File.AppendAllText(path, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            System.Diagnostics.Trace.TraceWarning(error.Message);
         }
     }
 
