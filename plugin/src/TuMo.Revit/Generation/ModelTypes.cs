@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Structure.StructuralSections;
 using TuMo.Core;
 using ElementType = TuMo.Core.ElementType;
 using TuMo.Revit.Compat;
@@ -78,7 +79,9 @@ internal sealed class ModelTypes
         var depth = round ? width : RevitApi.Feet(Positive(data.Depth, "柱深"));
         var desiredMaterial = FindMaterial(data.Material);
 
-        var compatible = types.Where(type => HasMaterial(type, desiredMaterial)).ToArray();
+        // Width and depth are also available on steel I-sections and hollow profiles.
+        var compatible = types.Where(type => HasMaterial(type, desiredMaterial) &&
+            HasColumnShape(type.Family.StructuralSectionShape, round)).ToArray();
         foreach (var type in compatible)
         {
             var size = ColumnSize(type, round);
@@ -133,6 +136,10 @@ internal sealed class ModelTypes
 
     private static bool HasMaterial(FamilySymbol type, Material? desired) =>
         desired == null || type.get_Parameter(BuiltInParameter.STRUCTURAL_MATERIAL_PARAM)?.AsElementId() == desired.Id;
+
+    private static bool HasColumnShape(StructuralSectionShape shape, bool round) => round
+        ? shape is StructuralSectionShape.ConcreteRound or StructuralSectionShape.RoundBar
+        : shape is StructuralSectionShape.ConcreteRectangle or StructuralSectionShape.RectangularBar;
 
     private static (Parameter? Width, Parameter? Depth) ColumnSize(FamilySymbol type, bool round)
     {
