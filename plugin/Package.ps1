@@ -29,12 +29,14 @@ try {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'src/TuMo.Revit/TuMo.Revit.addin') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install.ps1') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $root 'docs/test-point-1.md') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $root 'docs/revit-review.md') -Destination $stage
     Set-Content -LiteralPath (Join-Path $stage 'RevitVersion.txt') -Value $RevitVersion -Encoding ASCII
     $included = @(
         (Join-Path $stage 'Install.ps1'),
         (Join-Path $stage 'TuMo.Revit.addin'),
         (Join-Path $stage 'RevitVersion.txt'),
         (Join-Path $stage 'test-point-1.md'),
+        (Join-Path $stage 'revit-review.md'),
         $payload
     )
     $zip = Join-Path $output "TuMo-Revit-$RevitVersion.zip"

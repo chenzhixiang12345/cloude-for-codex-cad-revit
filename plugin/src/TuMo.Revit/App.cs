@@ -28,6 +28,11 @@ public sealed class App : IExternalApplication
         {
             ToolTip = "识别一张 DXF 平面图并生成标高、轴网、柱和墙。"
         });
+        panel.AddItem(new PushButtonData("TuMo.Review", "从 DXF\n审图",
+            Assembly.GetExecutingAssembly().Location, typeof(ReviewCommand).FullName!)
+        {
+            ToolTip = "在独立绘图视图中导入 CAD 底图，并叠加带编号的识别结果。"
+        });
         return Result.Succeeded;
     }
 

@@ -22,7 +22,7 @@ internal static class ModelBuilder
         using var transaction = new Transaction(document, "TuMo 生成模型");
         transaction.Start();
         var options = transaction.GetFailureHandlingOptions();
-        options.SetFailuresPreprocessor(new ModelFailures(log));
+        options.SetFailuresPreprocessor(new LoggedFailures(log));
         options.SetClearAfterRollback(true);
         transaction.SetFailureHandlingOptions(options);
         try
@@ -253,26 +253,5 @@ internal static class ModelBuilder
             BaseOffset = baseOffset;
             TopOffset = topOffset;
         }
-    }
-}
-
-internal sealed class ModelFailures : IFailuresPreprocessor
-{
-    private readonly RunLog log;
-
-    public ModelFailures(RunLog log) => this.log = log;
-
-    public FailureProcessingResult PreprocessFailures(FailuresAccessor accessor)
-    {
-        var hasError = false;
-        foreach (var entry in accessor.GetFailureMessages())
-        {
-            log.Write($"Revit {entry.GetSeverity()}，{entry.GetDescriptionText()}");
-            if (entry.GetSeverity() == FailureSeverity.Warning)
-                accessor.DeleteWarning(entry);
-            else
-                hasError = true;
-        }
-        return hasError ? FailureProcessingResult.ProceedWithRollBack : FailureProcessingResult.Continue;
     }
 }
