@@ -1,0 +1,30 @@
+name: Engine EXE
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e "engine[package]"
+      - run: ./engine/build-exe.ps1
+      - name: Verify packaged engine
+        shell: pwsh
+        run: |
+          python -m eval.synthetic out/ci-synthetic
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./dist/tumo-engine.exe run out/ci-synthetic/job.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m eval.synthetic out/ci-synthetic --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tumo-engine-windows
+          path: dist/tumo-engine.exe
+          if-no-files-found: error
