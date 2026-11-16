@@ -8,7 +8,7 @@ from unicodedata import normalize
 from ezdxf import bbox
 
 from tumo_engine.io.dxf_reader import read_dxf
-from tumo_engine.preprocess import Bounds, layer_key, point, viewport_bounds
+from tumo_engine.preprocess import Bounds, entity_visible, hidden_layer_names, layer_key, point, viewport_bounds
 
 TITLE = re.compile(r"(?:平面图|立面图|剖面图|详图|图纸目录|图纸清单|floor\s*plan|schedule)", re.I)
 STANDARD = re.compile(r"标准层|典型层|(?:[一二三四五六七八九十\d]+)\s*[-~～至—–]\s*[一二三四五六七八九十\d]+\s*层|typical", re.I)
@@ -81,16 +81,31 @@ def input_drawing(path):
 
 
 def top_level_text(layout):
+    hidden_layers = hidden_layer_names(layout.doc)
     for entity in layout.query("TEXT MTEXT ATTRIB INSERT"):
-        contents = entity.attribs if entity.dxftype() == "INSERT" else [entity]
+        parent_layer = entity.dxf.get("layer", "0")
+        if entity.dxftype() == "INSERT":
+            if not entity_visible(entity, hidden_layers, effective_layer=parent_layer):
+                continue
+            contents = entity.attribs
+        else:
+            contents = (entity,)
         for item in contents:
+            layer = item.dxf.get("layer", "0")
+            if layer == "0":
+                layer = parent_layer
+            if not entity_visible(item, hidden_layers, effective_layer=layer):
+                continue
             text = normalize("NFKC", " ".join(item.plain_text().split()))
             if text:
-                yield item.dxf.get("layer", "0"), item.dxf.insert, text
+                yield layer, item.dxf.insert, text
 
 
 def _frames(layout, factor, pattern):
+    hidden_layers = hidden_layer_names(layout.doc)
     for entity in layout.query("INSERT LWPOLYLINE"):
+        if not entity_visible(entity, hidden_layers):
+            continue
         key = layer_key(entity.dxf.layer)
         if entity.dxftype() == "INSERT":
             key += " " + entity.dxf.name.upper()

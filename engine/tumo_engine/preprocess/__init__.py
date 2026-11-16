@@ -38,6 +38,22 @@ class Primitive:
         return Point(self.points[0])
 
 
+def hidden_layer_names(doc):
+    """Return case-insensitive keys of globally hidden layers."""
+    return {layer.dxf.name.casefold() for layer in doc.layers if layer.is_off() or layer.is_frozen()}
+
+
+def entity_visible(entity, hidden_layers, *, effective_layer=None):
+    """Test graphic flags and the effective layer after block inheritance."""
+    if effective_layer is None:
+        effective_layer = entity.dxf.get("layer", "0")
+    if effective_layer.casefold() in hidden_layers:
+        return False
+    if entity.dxf.is_supported("invisible") and entity.dxf.get("invisible", 0):
+        return False
+    return entity.dxftype() not in {"ATTRIB", "ATTDEF"} or not entity.is_invisible
+
+
 def unit_factor(doc):
     """Prefer declared units. Infer a unanimous scale only for unitless DXF."""
     if doc.units:
@@ -45,9 +61,10 @@ def unit_factor(doc):
             return units.conversion_factor(doc.units, units.MM)
         except (IndexError, ValueError, TypeError):
             return 1.0
+    hidden_layers = hidden_layer_names(doc)
     ratios = []
     for dim in doc.modelspace().query("DIMENSION"):
-        if dim.dimtype not in (0, 1):
+        if dim.dimtype not in (0, 1) or not entity_visible(dim, hidden_layers):
             continue
         text = dim.dxf.text.strip()
         if not re.fullmatch(r"\d+(?:\.\d+)?", text):
@@ -116,13 +133,15 @@ def viewport_bounds(doc, factor):
     return max(candidates)[1] if candidates else None
 
 
-def decompose(entities, layer="0", handles=(), names=(), skipped=None):
+def decompose(entities, layer="0", handles=(), names=(), skipped=None, *, hidden_layers=frozenset()):
     """Expand nested INSERTs and preserve the top-level and definition handles."""
     for entity in entities:
         kind = entity.dxftype()
         logical_layer = entity.dxf.get("layer", "0")
         if logical_layer == "0":
             logical_layer = layer
+        if not entity_visible(entity, hidden_layers, effective_layer=logical_layer):
+            continue
         original = entity.source_of_copy or entity
         handle = original.dxf.handle
         trace = (*handles, handle) if handle and handle not in handles else handles
@@ -136,16 +155,22 @@ def decompose(entities, layer="0", handles=(), names=(), skipped=None):
             for expanded in entity.multi_insert():
                 # multi_insert uses free-standing virtual copies.
                 expanded.set_source_of_copy(original)
-                yield from decompose([expanded], logical_layer, trace, names, skipped)
+                yield from decompose(
+                    [expanded], logical_layer, trace, names, skipped, hidden_layers=hidden_layers,
+                )
             continue
         for attrib in entity.attribs:
             attr_layer = attrib.dxf.layer if attrib.dxf.layer != "0" else logical_layer
+            if not entity_visible(attrib, hidden_layers, effective_layer=attr_layer):
+                continue
             ancestor = attrib.source_of_copy or attrib
             attr_trace = (*trace, ancestor.dxf.handle) if ancestor.dxf.handle else trace
             yield attrib, attr_layer, attr_trace, (*names, name)
         try:
             children = entity.virtual_entities(skipped_entity_callback=skipped)
-            yield from decompose(children, logical_layer, trace, (*names, name), skipped)
+            yield from decompose(
+                children, logical_layer, trace, (*names, name), skipped, hidden_layers=hidden_layers,
+            )
         except (ezdxf.DXFError, RecursionError):
             if skipped:
                 skipped(entity, "无法展开嵌套块")
@@ -212,7 +237,8 @@ def primitives(doc, factor, bounds=None):
     def skipped(entity, reason):
         warnings[(entity.dxftype(), reason)] += 1
 
-    for entity, layer, handles, names in decompose(doc.modelspace(), skipped=skipped):
+    entities = decompose(doc.modelspace(), skipped=skipped, hidden_layers=hidden_layer_names(doc))
+    for entity, layer, handles, names in entities:
         kind = entity.dxftype()
         if kind == "HATCH":
             converted = _hatch_boundaries(entity, layer, handles, names, factor)
