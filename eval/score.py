@@ -24,10 +24,20 @@ def _geometry(item):
         return item["geometry"]
     if "start" in item and "end" in item:
         return {"kind": "line", "start": item["start"], "end": item["end"]}
-    return {"kind": "level", "elevation": item.get("elevation_arch", item.get("elevation_struct"))}
+    elevation = item.get("elevation_arch")
+    if elevation is None:
+        elevation = item.get("elevation_struct")
+    return {"kind": "level", "elevation": elevation}
 
 
 def _distance(left, right):
+    left_level, right_level = left.get("base_level"), right.get("base_level")
+    if left_level and right_level and left_level != right_level:
+        return float("inf")
+    left_sheet = (left.get("source") or {}).get("sheet")
+    right_sheet = (right.get("source") or {}).get("sheet")
+    if left_sheet and right_sheet and left_sheet != right_sheet:
+        return float("inf")
     a, b = _geometry(left), _geometry(right)
     if a["kind"] != b["kind"]:
         return float("inf")
@@ -90,7 +100,7 @@ def _matching(predictions, expected, tolerance):
 
 def _attributes(item):
     attributes = dict(item.get("type") or {})
-    for key in ("label", "name", "elevation_struct", "base_offset", "top_offset"):
+    for key in ("label", "name", "elevation_struct", "base_level", "top_level", "base_offset", "top_offset", "sill_height"):
         if item.get(key) is not None:
             attributes[key] = item[key]
     return {key: value for key, value in attributes.items() if value is not None}
@@ -148,6 +158,7 @@ def main(argv=None):
         parser.error("匹配容差必须是有限的正数。")
 
     samples = [args.sample] if args.sample else sorted(p for p in Path("samples").glob("*") if p.is_dir())
+    baseline = _read(args.baseline) if args.baseline else {}
     results = {}
     if args.smoke:
         results["空模型"] = {"status": "smoke", "categories": compare({}, {}, args.tolerance)}
@@ -175,9 +186,9 @@ def main(argv=None):
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"评分报告：{args.output}")
-    if args.baseline:
+    if baseline:
         regressions = []
-        for name, previous in _read(args.baseline).items():
+        for name, previous in baseline.items():
             current = results.get(name, {})
             regressions.extend(
                 f"{name}/{category}"
