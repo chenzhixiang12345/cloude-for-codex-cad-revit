@@ -7,6 +7,7 @@ def test_review_renders_source_and_identifiers(tmp_path):
     source = tmp_path / "plan.dxf"
     drawing = ezdxf.new()
     drawing.modelspace().add_line((0, 0), (1000, 1000))
+    drawing.modelspace().add_line((50000, 50000), (51000, 51000))
     drawing.saveas(source)
     model = {
         "sheets": [{"id": "S1", "file": source.name, "bounds": [-100, -100, 1100, 1100]}],
@@ -23,4 +24,5 @@ def test_review_renders_source_and_identifiers(tmp_path):
 
     svg = (images / "S1.svg").read_text(encoding="utf-8")
     assert all(value in svg for value in ("G-0001", "W-0001", "I-0001", "#b8bec6", "#b91c1c"))
+    assert svg.count("#b8bec6") == 1
     assert (images / "S1.png").read_bytes().startswith(b"\x89PNG")

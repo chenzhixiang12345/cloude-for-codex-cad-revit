@@ -13,12 +13,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from ezdxf import units
 from ezdxf.addons.drawing import Frontend, RenderContext
-from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configuration, ImagePolicy
+from ezdxf.addons.drawing.config import (
+    BackgroundPolicy, ColorPolicy, Configuration, HatchPolicy, ImagePolicy, LinePolicy,
+)
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
+from ezdxf.addons.drawing.recorder import Recorder
 from matplotlib import font_manager
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Polygon
-from matplotlib.transforms import Affine2D
+from ezdxf.math import Matrix44
 
 GRID = "#2563a6"
 COLUMN = "#9a3412"
@@ -49,12 +52,25 @@ def _background(ax, source, sheet):
         custom_fg_color=BACKGROUND,
         background_policy=BackgroundPolicy.WHITE,
         image_policy=ImagePolicy.IGNORE,
+        hatch_policy=HatchPolicy.SHOW_OUTLINE,
+        line_policy=LinePolicy.SOLID,
         lineweight_scaling=.7,
     )
-    Frontend(RenderContext(drawing), MatplotlibBackend(ax, adjust_figure=False), config).draw_layout(layout)
+    recorder = Recorder()
+    Frontend(RenderContext(drawing), recorder, config).draw_layout(layout)
+    player = recorder.player()
     if scale != 1:
-        for artist in (*ax.lines, *ax.patches, *ax.collections):
-            artist.set_transform(Affine2D().scale(scale) + artist.get_transform())
+        player.transform(Matrix44.scale(scale, scale, 1))
+    if sheet.get("bounds"):
+        x0, y0, x1, y1 = _padded_bounds(sheet["bounds"])
+        player.crop_rect((x0, y0), (x1, y1), distance=1)
+    player.replay(MatplotlibBackend(ax, adjust_figure=False))
+
+
+def _padded_bounds(bounds):
+    x0, y0, x1, y1 = bounds
+    pad = .035 * max(x1 - x0, y1 - y0)
+    return x0 - pad, y0 - pad, x1 + pad, y1 + pad
 
 
 def _own_sheet(item, sheet_id, first_sheet):
@@ -150,9 +166,8 @@ def _draw_sheet(model, sheet, output, source):
                     ax.scatter(*point, marker="x", color=ISSUE, linewidth=1.4, s=24, zorder=8)
                     _annotate(ax, issue["id"], point, ISSUE, 9)
             if sheet.get("bounds"):
-                x0, y0, x1, y1 = sheet["bounds"]
-                pad = .035 * max(x1 - x0, y1 - y0)
-                ax.set(xlim=(x0 - pad, x1 + pad), ylim=(y0 - pad, y1 + pad))
+                x0, y0, x1, y1 = _padded_bounds(sheet["bounds"])
+                ax.set(xlim=(x0, x1), ylim=(y0, y1))
             else:
                 ax.autoscale()
             ax.set_aspect("equal", adjustable="box")
