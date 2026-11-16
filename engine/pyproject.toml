@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tumo-engine"
+version = "0.1.0"
+description = "Read CAD drawings and export a TuMo model for Revit."
+requires-python = ">=3.11"
+dependencies = [
+    "ezdxf>=1.4,<2",
+    "shapely>=2,<3",
+    "numpy>=1.26,<3",
+    "pydantic>=2,<3",
+    "PyYAML>=6,<7",
+    "matplotlib>=3.9,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "jsonschema>=4,<5"]
+package = ["pyinstaller>=6,<7"]
+
+[project.scripts]
+tumo-engine = "tumo_engine.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tumo_engine*"]
+
+[tool.setuptools.package-data]
+tumo_engine = ["rules/*.yaml"]
