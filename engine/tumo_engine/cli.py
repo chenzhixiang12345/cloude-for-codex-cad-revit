@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from io import TextIOWrapper
 from math import isfinite
 from pathlib import Path
 
@@ -81,6 +83,9 @@ def _render(args):
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description="图模一致 DXF 识别引擎")
     commands = parser.add_subparsers(required=True)
     analyze = commands.add_parser("analyze", help="检查 DXF 图层、文字、块和布局。")
