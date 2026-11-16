@@ -17,7 +17,7 @@ from ezdxf.addons.drawing.config import BackgroundPolicy, ColorPolicy, Configura
 from ezdxf.addons.drawing.matplotlib import MatplotlibBackend
 from matplotlib import font_manager
 from matplotlib.lines import Line2D
-from matplotlib.patches import Polygon
+from matplotlib.patches import Circle, Polygon
 from matplotlib.transforms import Affine2D
 
 GRID = "#2563a6"
@@ -97,7 +97,13 @@ def _element(ax, element):
         point = geo["at"]
         outline = element.get("type") or {}
         width, depth = outline.get("width"), outline.get("depth")
-        if category == "column" and width and depth:
+        diameter = outline.get("diameter")
+        if category == "column" and diameter:
+            circle = Circle(point, diameter / 2, facecolor=color, edgecolor=color,
+                            linewidth=.9, alpha=.65, zorder=6)
+            circle.set_gid(f"outline-{element['id']}")
+            ax.add_patch(circle)
+        elif category == "column" and width and depth:
             angle = radians(geo.get("rotation_deg") or 0)
             corners = [(-width/2, -depth/2), (width/2, -depth/2), (width/2, depth/2), (-width/2, depth/2)]
             points = [(point[0] + x*cos(angle) - y*sin(angle), point[1] + x*sin(angle) + y*cos(angle))
@@ -135,7 +141,9 @@ def _draw_sheet(model, sheet, output, source):
             for issue in model["issues"]:
                 where = issue.get("where") or {}
                 element_id = issue.get("element")
-                if where.get("sheet") != identifier and element_id not in points:
+                explicit_sheet = where.get("sheet")
+                issue_sheet = explicit_sheet or (identifier if element_id in points else None)
+                if issue_sheet != identifier:
                     continue
                 point = where.get("at") or points.get(element_id)
                 if point is not None:
