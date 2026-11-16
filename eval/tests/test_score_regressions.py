@@ -4,7 +4,7 @@ from eval.score import compare, main
 
 
 def test_uses_structural_elevation_when_architectural_elevation_is_null():
-    model = {"levels": [{"id": "L1", "elevation_arch": None, "elevation_struct": 3600}]}
+    model = {"levels": [{"id": "L1", "elevation_arch": None, "elevation_struct": 3600, "source": "table"}]}
 
     assert compare(model, model)["level"]["matched"] == 1
 

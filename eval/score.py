@@ -30,12 +30,17 @@ def _geometry(item):
     return {"kind": "level", "elevation": elevation}
 
 
+def _sheet(item):
+    source = item.get("source")
+    return source.get("sheet") if isinstance(source, dict) else None
+
+
 def _distance(left, right):
     left_level, right_level = left.get("base_level"), right.get("base_level")
     if left_level and right_level and left_level != right_level:
         return float("inf")
-    left_sheet = (left.get("source") or {}).get("sheet")
-    right_sheet = (right.get("source") or {}).get("sheet")
+    left_sheet = _sheet(left)
+    right_sheet = _sheet(right)
     if left_sheet and right_sheet and left_sheet != right_sheet:
         return float("inf")
     a, b = _geometry(left), _geometry(right)
