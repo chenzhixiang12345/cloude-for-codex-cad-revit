@@ -1,0 +1,41 @@
+confidence:
+  publish: 0.50
+  review: 0.85
+layers:
+  title: '(?:SHEET|SHET|TITLE|图签|图名|图框|DRWN)'
+  frame: '(?:FRAME|BORDER|图框|内框|THAPE|SHET)'
+  grids: '(?:^|[-_])(?:GRID|AXIS|轴网|轴线)(?:$|[-_])'
+  grid_text: '(?:GRID|AXIS|轴线|轴网|轴号)'
+  grid_exclude: '(?:DIMS|DIMENSION|INDX)'
+  columns: '(?:^|[-_])(?:COLUMN|COL|PILLAR|柱)(?:$|[-_])'
+  walls: '^(?:WALL|AE[-_]WALL)(?:$|[-_](?:BLOCK|LINE)$)|砌体|墙线'
+  structural_profiles: '^(?:S[-_]WALL|AE[-_]STRU)(?:$|[-_]HACH$)'
+  level_table: '(?:层高表|楼层表|LEVEL[-_]TABLE|层数表)'
+grid:
+  label_pattern: '^(?:[A-Z]{1,2}|\d{1,3})(?:[/.-](?:[A-Z]{1,2}|\d{1,3}))?$'
+  minimum_length: 1500
+  end_search: 1400
+  lateral_tolerance: 550
+  direction_tolerance_deg: 0.4
+  collinear_tolerance: 10
+  gap: 100
+column:
+  mark_pattern: '^(?:KZ|GZ|Z|柱)\s*\d+[A-Z]?$'
+  minimum_dimension: 180
+  maximum_dimension: 2500
+  maximum_aspect: 2.5
+  rectangularity: 0.97
+  mark_distance: 900
+  snap_distance: 80
+wall:
+  thicknesses: [50, 75, 90, 100, 120, 150, 180, 190, 200, 220, 240, 250, 280, 300, 350, 400, 450, 500]
+  thickness_tolerance: 12
+  minimum_length: 250
+  minimum_length_ratio: 1.25
+  minimum_overlap_ratio: 0.45
+  direction_tolerance_deg: 1
+  collinear_tolerance: 8
+  gap: 65
+level:
+  default_height: 3000
+  row_tolerance: 180
