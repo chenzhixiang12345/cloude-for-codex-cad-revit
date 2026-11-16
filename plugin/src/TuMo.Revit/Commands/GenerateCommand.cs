@@ -1,0 +1,66 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using Autodesk.Revit.Attributes;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+using Microsoft.Win32;
+using TuMo.Core;
+using TuMo.Revit.Logging;
+
+namespace TuMo.Revit.Commands;
+
+[Transaction(TransactionMode.Manual)]
+[Regeneration(RegenerationOption.Manual)]
+public sealed class GenerateCommand : IExternalCommand
+{
+    public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+    {
+        var document = commandData.Application.ActiveUIDocument?.Document;
+        if (document == null || document.IsFamilyDocument || document.IsReadOnly)
+        {
+            TaskDialog.Show("TuMo", "请先打开可编辑的 Revit 项目。");
+            return Result.Cancelled;
+        }
+
+        var picker = new OpenFileDialog
+        {
+            Filter = "CAD DXF (*.dxf)|*.dxf",
+            Title = "选择一张标准层平面图",
+            Multiselect = false,
+            CheckFileExists = true
+        };
+        if (picker.ShowDialog() != true)
+            return Result.Cancelled;
+
+        using var log = new RunLog();
+        var timer = Stopwatch.StartNew();
+        try
+        {
+            var application = commandData.Application.Application;
+            log.Write($"Revit {application.VersionNumber}, build {application.VersionBuild}; " +
+                $"TuMo {Assembly.GetExecutingAssembly().GetName().Version}");
+            log.Write($"输入 {picker.FileName}");
+            var output = EngineRunner.Run(picker.FileName, log);
+            var model = TuMoModel.Read(Path.Combine(output, "model.json"));
+            log.Write($"识别结果，标高 {model.Levels.Length}，轴网 {model.Grids.Length}，构件 {model.Elements.Length}。");
+            var reportPath = Path.Combine(output, "issues.json");
+            var issues = IssueReport.Read(reportPath);
+            log.Write($"疑点报告 {reportPath}");
+            var report = Generation.ModelBuilder.Build(document, model, log);
+            TaskDialog.Show("TuMo", $"{report}\n识别疑点 {issues.Issues.Length} 项。\n\n输出目录\n{output}\n\n日志\n{log.Path}");
+            return Result.Succeeded;
+        }
+        catch (Exception error)
+        {
+            log.Write(error.ToString());
+            message = $"{error.Message}\n\n日志\n{log.Path}";
+            return Result.Failed;
+        }
+        finally
+        {
+            log.Write($"总耗时 {timer.ElapsedMilliseconds} ms");
+        }
+    }
+}

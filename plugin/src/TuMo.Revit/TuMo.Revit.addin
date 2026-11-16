@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>图模一致 TuMo</Name>
+    <Assembly>TuMo\TuMo.Revit.dll</Assembly>
+    <AddInId>DEFB9607-2EFF-4C51-9212-5F1643E189CF</AddInId>
+    <FullClassName>TuMo.Revit.App</FullClassName>
+    <VendorId>TUMO</VendorId>
+    <VendorDescription>图模一致</VendorDescription>
+  </AddIn>
+</RevitAddIns>

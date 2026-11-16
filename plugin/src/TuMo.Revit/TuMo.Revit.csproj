@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Configurations>Release;Debug;Release R20;Release R21;Release R22;Release R23;Release R24;Release R25;Release R26;Release R27</Configurations>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <Optimize Condition="'$(Configuration)' != 'Debug'">true</Optimize>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release R20'">
+    <TargetFramework>net47</TargetFramework>
+    <RevitApiVersion>2020.2.11</RevitApiVersion>
+    <DefineConstants>$(DefineConstants);REVIT2020</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release R21'">
+    <TargetFramework>net48</TargetFramework>
+    <RevitApiVersion>2021.1.40</RevitApiVersion>
+    <DefineConstants>$(DefineConstants);REVIT2021;REVIT2021_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release R22'">
+    <TargetFramework>net48</TargetFramework>
+    <RevitApiVersion>2022.1.1</RevitApiVersion>
+    <DefineConstants>$(DefineConstants);REVIT2022;REVIT2021_OR_GREATER;REVIT2022_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release R23'">
+    <TargetFramework>net48</TargetFramework>
+    <RevitApiVersion>2023.0.1</RevitApiVersion>
+    <DefineConstants>$(DefineConstants);REVIT2023;REVIT2021_OR_GREATER;REVIT2022_OR_GREATER;REVIT2023_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release R24'">
+    <TargetFramework>net48</TargetFramework>
+    <RevitApiVersion>2024.0.0</RevitApiVersion>
+    <DefineConstants>$(DefineConstants);REVIT2024;REVIT2021_OR_GREATER;REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release R25' Or '$(Configuration)' == 'Release' Or '$(Configuration)' == 'Debug'">
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RevitApiVersion>2025.0.2</RevitApiVersion>
+    <DefineConstants>$(DefineConstants);REVIT2025;REVIT2021_OR_GREATER;REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER;REVIT2025_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release R26'">
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RevitApiVersion>2026.0.4</RevitApiVersion>
+    <DefineConstants>$(DefineConstants);REVIT2026;REVIT2021_OR_GREATER;REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER;REVIT2025_OR_GREATER;REVIT2026_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release R27'">
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RevitApiVersion>2027.1.0</RevitApiVersion>
+    <DefineConstants>$(DefineConstants);REVIT2027;REVIT2021_OR_GREATER;REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER;REVIT2025_OR_GREATER;REVIT2026_OR_GREATER;REVIT2027_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPI" Version="$(RevitApiVersion)" PrivateAssets="all" />
+    <PackageReference Include="Nice3point.Revit.Api.RevitAPIUI" Version="$(RevitApiVersion)" PrivateAssets="all" />
+    <ProjectReference Include="../TuMo.Core/TuMo.Core.csproj" />
+  </ItemGroup>
+</Project>

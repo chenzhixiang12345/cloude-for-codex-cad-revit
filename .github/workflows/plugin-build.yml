@@ -1,0 +1,38 @@
+name: Revit plugin
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    uses: ./.github/workflows/engine-exe.yml
+
+  plugin:
+    needs: engine
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        revit: [2020, 2021, 2022, 2023, 2024, 2025, 2026, 2027]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/download-artifact@v4
+        with:
+          name: tumo-engine-windows
+          path: dist
+      - name: Build and package
+        shell: pwsh
+        run: ./plugin/Package.ps1 -RevitVersion ${{ matrix.revit }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TuMo-Revit-${{ matrix.revit }}
+          path: dist/TuMo-Revit-${{ matrix.revit }}.zip
+          if-no-files-found: error

@@ -59,6 +59,10 @@ public sealed class Sheet
     [DataMember(Name = "kind")] public string? Kind { get; set; }
     [DataMember(Name = "title")] public string? Title { get; set; }
     [DataMember(Name = "levels")] public string[]? Levels { get; set; }
+    [DataMember(Name = "number")] public string? Number { get; set; }
+    [DataMember(Name = "layout")] public string? Layout { get; set; }
+    [DataMember(Name = "bounds")] public double[]? Bounds { get; set; }
+    [DataMember(Name = "units_to_mm")] public double? UnitsToMillimeters { get; set; }
     [DataMember(Name = "scale")] public double? Scale { get; set; }
     [DataMember(Name = "transform")] public SheetTransform? Transform { get; set; }
 }
@@ -68,7 +72,7 @@ public sealed class SheetTransform
 {
     [DataMember(Name = "dx")] public double Dx { get; set; }
     [DataMember(Name = "dy")] public double Dy { get; set; }
-    [DataMember(Name = "rot_deg")] public double Rotation { get; set; }
+    [DataMember(Name = "rot_deg")] public double? Rotation { get; set; }
 }
 
 [DataContract]
@@ -105,8 +109,8 @@ public sealed class ModelElement
     [DataMember(Name = "geometry")] public Geometry? Geometry { get; set; }
     [DataMember(Name = "base_level")] public string? BaseLevel { get; set; }
     [DataMember(Name = "top_level")] public string? TopLevel { get; set; }
-    [DataMember(Name = "base_offset")] public double BaseOffset { get; set; }
-    [DataMember(Name = "top_offset")] public double TopOffset { get; set; }
+    [DataMember(Name = "base_offset")] public double? BaseOffset { get; set; }
+    [DataMember(Name = "top_offset")] public double? TopOffset { get; set; }
     [DataMember(Name = "host")] public string? Host { get; set; }
     [DataMember(Name = "sill_height")] public double? SillHeight { get; set; }
     [DataMember(Name = "confidence")] public double? Confidence { get; set; }
@@ -134,9 +138,10 @@ public sealed class Geometry
     [DataMember(Name = "at")] public double[]? At { get; set; }
     [DataMember(Name = "start")] public double[]? Start { get; set; }
     [DataMember(Name = "end")] public double[]? End { get; set; }
+    [DataMember(Name = "points")] public double[][]? Points { get; set; }
     [DataMember(Name = "facing")] public double[]? Facing { get; set; }
     [DataMember(Name = "hand")] public string? Hand { get; set; }
-    [DataMember(Name = "rotation_deg")] public double Rotation { get; set; }
+    [DataMember(Name = "rotation_deg")] public double? Rotation { get; set; }
 }
 
 [DataContract]
@@ -153,6 +158,21 @@ public sealed class Relation
     [DataMember(Name = "a")] public string A { get; set; } = "";
     [DataMember(Name = "b")] public string B { get; set; } = "";
     [DataMember(Name = "priority")] public string? Priority { get; set; }
+}
+
+[DataContract]
+public sealed class IssueReport
+{
+    [DataMember(Name = "issues", IsRequired = true)] public ModelIssue[] Issues { get; set; } = Array.Empty<ModelIssue>();
+
+    public static IssueReport Read(string path)
+    {
+        using var stream = File.OpenRead(path);
+        var reader = new DataContractJsonSerializer(typeof(IssueReport));
+        if (reader.ReadObject(stream) is not IssueReport report || report.Issues == null)
+            throw new InvalidDataException("疑点报告为空。");
+        return report;
+    }
 }
 
 [DataContract]
