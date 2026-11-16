@@ -1,0 +1,27 @@
+# Confidential drawings and derived data stay local.
+/samples/
+/out/
+/eval/reports/*
+!/eval/reports/.gitkeep
+
+# Prevent accidental staging of additional CAD inputs and local BIM output.
+*.[dD][wW][gG]
+*.[dD][xX][fF]
+*.[rR][vV][tT]
+*.log
+*.zip
+*.exe
+
+# Python and .NET build files.
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+/build/
+/dist/
+[Bb]in/
+[Oo]bj/
+.vs/
+.idea/
