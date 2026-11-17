@@ -14,7 +14,7 @@ from tumo_engine.preprocess import Bounds, bind_xrefs, primitives, unit_factor
 from tumo_engine.recognize.column import recognize_columns
 from tumo_engine.recognize.geometry import rounded
 from tumo_engine.recognize.grid import recognize_grids
-from tumo_engine.recognize.level import recognize_levels
+from tumo_engine.recognize.level import floor_from_title, recognize_levels
 from tumo_engine.recognize.opening import recognize_openings
 from tumo_engine.recognize.room import identify_rooms
 from tumo_engine.recognize.slab import recognize_slabs
@@ -22,6 +22,7 @@ from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
 from tumo_engine.tables import read_opening_schedule
+from tumo_engine.tables.levels import read_level_schedule
 
 
 _OPENING_TABLE = re.compile(r"门窗(?:表|详图|大样)|(?:门|窗)表|(?:door|window)[-_ ]*schedule", re.I)
@@ -210,6 +211,52 @@ def _add_slabs(model, items, rules, issue):
         publish(opening, _stable_id("SO", host["id"], opening["geometry"]))
 
 
+def _plan_levels(items, title, discipline, rules):
+    config = rules["level"]
+    rows, warnings = read_level_schedule(items, discipline=discipline,
+                                         layer_pattern=rules["layers"]["level_table"],
+                                         row_tolerance=config["row_tolerance"])
+    if not rows:
+        levels, legacy_warnings = recognize_levels(items, title, discipline, rules)
+        return levels, rows, warnings + legacy_warnings
+
+    numbered = {row.number: row for row in rows if row.number is not None}
+    floor = floor_from_title(title)
+    if floor is None:
+        floor = min((number for number in numbered if number > 0), default=1)
+    top_floor = 1 if floor == -1 else floor + 1
+    base_row, top_row = numbered.get(floor), numbered.get(top_floor)
+    own = "elevation_struct" if discipline == "struct" else "elevation_arch"
+    other = "elevation_arch" if discipline == "struct" else "elevation_struct"
+
+    def elevation(level):
+        return level.get(own, level.get(other))
+
+    def level(row, number, source, values):
+        if row is not None and elevation(data := row.to_level()) is not None:
+            data["evidence"] = ["level_schedule:" + ",".join(row.handles)]
+            return data
+        identifier = f"LB{-number}" if number < 0 else f"L{number}"
+        name = f"B{-number}F" if number < 0 else f"{number}F"
+        return {"id": identifier, "name": name, "source": source, "confidence": 0.5, **values}
+
+    base = level(base_row, floor, "默认楼层", {own: (floor - 1) * config["default_height"]})
+    if base["source"] == "默认楼层":
+        warnings.append("楼层表缺少当前层的明确标高，暂用默认楼层标高。")
+    height = base_row.height if base_row and base["source"] == "楼层表" else None
+    top = level(top_row, top_floor, "楼层表层高" if height is not None else "默认层高", {
+        key: base[key] + (height if height is not None else config["default_height"])
+        for key in (own, other) if key in base
+    })
+    if top["source"] == "默认层高":
+        warnings.append(f"楼层表缺少上层标高，暂用 {config['default_height']} mm 层高。")
+    if elevation(top) <= elevation(base):
+        warnings.append("楼层表的上层标高不高于当前层。请核对后再生成该层。")
+    elif height is not None and top["source"] == "楼层表" and abs(elevation(top) - elevation(base) - height) > 1:
+        warnings.append("相邻楼层表的标高差与所列层高不一致。按明确标高保留这两层，待复核。")
+    return [base, top], rows, warnings
+
+
 def run(input_path: Path, bounds: Bounds | None = None) -> dict:
     path = Path(input_path).resolve()
     drawing = input_drawing(path)
@@ -283,7 +330,7 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
     level_items = items
     if sheet_info.bounds is not None and sheet_info.bounds != chosen_bounds:
         level_items, _ = primitives(doc, factor, sheet_info.bounds)
-    levels, warnings = recognize_levels(level_items, sheet_info.title, subject, rules)
+    levels, level_rows, warnings = _plan_levels(level_items, sheet_info.title, subject, rules)
     model["levels"] = levels
     sheet["levels"] = [level["id"] for level in levels]
     for message in warnings:

@@ -55,3 +55,19 @@ def test_plan_publishes_slabs_and_assigns_opening_to_containing_host(tmp_path):
     assert opening["host"] == slab["id"]
     assert {item["base_level"] for item in model["elements"]} == {"L3"}
     assert any("洞口" in issue["message"] and issue["where"].get("at") for issue in model["issues"])
+
+
+def test_plan_prefers_inline_level_table_and_current_row_height(tmp_path):
+    drawing = tmp_path / "三层平面图.dxf"
+    doc = ezdxf.new(units=4)
+    space = doc.modelspace()
+    for x, y, caption in ((0, 0, "层数"), (1500, 0, "标高H(m)"), (3000, 0, "层高(mm)"),
+                          (0, -500, "3F"), (1500, -500, "7"), (3000, -500, "3200")):
+        space.add_text(caption, dxfattribs={"insert": (x, y), "layer": "AD-层高表"})
+    doc.saveas(drawing)
+
+    model = run(drawing)
+
+    assert [item["elevation_arch"] for item in model["levels"]] == [7000, 10200]
+    assert model["levels"][1]["source"] == "楼层表层高"
+    assert not any("默认" in issue["message"] for issue in model["issues"])
