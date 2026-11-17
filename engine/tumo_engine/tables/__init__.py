@@ -1,7 +1,7 @@
 """Read numeric opening dimensions from DXF text and attributed blocks."""
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import hypot, isfinite
 import re
 from unicodedata import normalize
@@ -15,14 +15,20 @@ _UNIT_TO_MM = {"MM": 1, "CM": 10, "M": 1000, "毫米": 1, "厘米": 10, "米": 1
 _LENGTH = r"(\d+(?:\.\d+)?|\.\d+)\s*(MM|CM|M|毫米|厘米|米)?"
 _PAIR = re.compile(rf"{_LENGTH}\s*[×X*]\s*{_LENGTH}")
 _SINGLE = re.compile(_LENGTH)
+_RELATIVE_BOTTOM = re.compile(rf"(?:H\s*(?=[+-]))?([+-]?)\s*{_LENGTH}")
 _MARK = re.compile(r"([A-Z]{1,6}[-_]?\d[A-Z0-9]*(?:[-_][A-Z0-9]+)*)(?:\s*\([^)]+\)|\s*[\u4e00-\u9fff]+)?")
 _HEADING_UNIT = re.compile(r"\((MM|CM|M|毫米|厘米|米)\)$")
 _HEADINGS = {
     "mark": {"编号", "代号", "设计编号", "门窗编号", "门编号", "窗编号", "门窗代号"},
-    "size": {"洞口尺寸", "门窗尺寸", "宽×高", "宽X高", "洞宽×洞高", "规格尺寸"},
-    "width": {"宽", "宽度", "洞口宽", "洞口宽度"},
-    "height": {"高", "高度", "洞口高", "洞口高度"},
+    "wall_mark": {"墙洞编号", "墙洞代号", "墙上洞口编号", "墙体洞口编号", "WALLOPENINGID", "WALLOPENINGMARK"},
+    "size": {"洞口尺寸", "门窗尺寸", "墙洞尺寸", "墙上洞口尺寸", "墙体洞口尺寸", "宽×高", "宽X高", "洞宽×洞高", "规格尺寸"},
+    "width": {"宽", "宽度", "洞口宽", "洞口宽度", "墙洞宽", "墙洞宽度"},
+    "height": {"高", "高度", "洞口高", "洞口高度", "墙洞高", "墙洞高度"},
     "sill": {"窗台", "窗台高", "窗台高度"},
+    "wall_bottom": {
+        "洞底高", "洞口底高", "洞底相对标高", "洞口底相对标高", "洞底相对楼层标高", "洞底相对本层标高", "洞口底部相对标高",
+        "洞底距本层楼面", "洞底离楼面高度", "WALLOPENINGBOTTOMOFFSET",
+    },
 }
 
 
@@ -33,6 +39,13 @@ class OpeningScheduleRow:
     height: float
     sill_height: float | None
     handles: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WallOpeningScheduleRow(OpeningScheduleRow):
+    """A wall opening, with its base elevation relative to its plan level in sill_height."""
+
+    category: str = field(default="wall_opening", init=False)
 
 
 @dataclass(frozen=True)
@@ -54,7 +67,7 @@ def _heading(text):
         caption = caption[:unit.start()]
     for key, captions in _HEADINGS.items():
         if caption in captions:
-            return key, unit[1] if unit else "MM"
+            return key, unit[1] if unit else None if key == "wall_bottom" else "MM"
     return None, None
 
 
@@ -68,6 +81,16 @@ def _single(cell, unit):
     return _length(match[1], match[2], unit) if match else None
 
 
+def _relative_bottom(cell, unit):
+    match = _RELATIVE_BOTTOM.fullmatch(cell.text.replace("−", "-"))
+    if not match:
+        return None
+    sign, number, explicit_unit = match.groups()
+    if not (explicit_unit or unit) and "." in number and float(number) != 0:
+        return None
+    return _length(sign + number, explicit_unit, unit or "MM")
+
+
 def _dimensions(cell, unit):
     match = _PAIR.fullmatch(cell.text)
     if not match:
@@ -78,12 +101,14 @@ def _dimensions(cell, unit):
     return (width, height) if width and height else None
 
 
-def _row(mark, width, height, sill, cells):
+def _row(mark, width, height, sill, cells, row_type=OpeningScheduleRow):
     handles = tuple(dict.fromkeys(handle for cell in cells for handle in cell.handles))
-    return OpeningScheduleRow(mark, width, height, sill, handles)
+    return row_type(mark, width, height, sill, handles)
 
 
 def _row_table(header, headers, index, row_tolerance, max_row_gap):
+    wall = _heading(header.text)[0] == "wall_mark"
+    height_key = "wall_bottom" if wall else "sill"
     # Headings from a neighboring table or a row below do not belong to this table.
     peers = sorted(
         (cell for cell in headers
@@ -93,7 +118,7 @@ def _row_table(header, headers, index, row_tolerance, max_row_gap):
     columns = {}
     for cell in peers:
         key, unit = _heading(cell.text)
-        if key == "mark":
+        if key in {"mark", "wall_mark"}:
             break
         columns.setdefault(key, (cell, unit))
 
@@ -120,18 +145,18 @@ def _row_table(header, headers, index, row_tolerance, max_row_gap):
             -entry[0].y, abs(entry[0].x - header.x), entry[1]))
         y = mark_cell.y
         chosen = {}
-        for key in (*required, "sill"):
+        for key in (*required, height_key):
             if key not in columns:
                 continue
             column, unit = columns[key]
-            parse = _dimensions if key == "size" else _single
+            parse = {"size": _dimensions, "wall_bottom": _relative_bottom}.get(key, _single)
             cells = index.nearby(box(column.x - column_tolerance, y - row_tolerance,
                                      column.x + column_tolerance, y + row_tolerance), 0)
             candidates = [
                 (cell, value) for cell in cells
                 if (value := parse(cell, unit)) is not None
             ]
-            if candidates:
+            if candidates and (not wall or len({value for _, value in candidates}) == 1):
                 chosen[key] = min(candidates, key=lambda entry: (
                     abs(entry[0].y - y), abs(entry[0].x - column.x), entry[0].text))
         if all(key in chosen for key in required):
@@ -140,8 +165,11 @@ def _row_table(header, headers, index, row_tolerance, max_row_gap):
             else:
                 width, height = chosen["width"][1], chosen["height"][1]
             if width > 0 and height > 0:
-                sill = chosen["sill"][1] if "sill" in chosen else None
-                yield _row(mark, width, height, sill, [mark_cell, *(cell for cell, _ in chosen.values())])
+                sill = chosen[height_key][1] if height_key in chosen else None
+                provenance = [mark_cell, *(cell for cell, _ in chosen.values())]
+                if wall:
+                    provenance.extend([header, *(columns[key][0] for key in chosen)])
+                yield _row(mark, width, height, sill, provenance, WallOpeningScheduleRow if wall else OpeningScheduleRow)
 
 
 def _opening_card(size, mark_headers, index):
@@ -202,7 +230,8 @@ def read_opening_schedule(
             cells.setdefault((x, y, text), _Cell(x, y, text, item.handles))
     headings = [cell for cell in cells.values() if _heading(cell.text)[0]]
     marks = [cell for cell in headings if _heading(cell.text)[0] == "mark"]
-    if not marks:
+    wall_marks = [cell for cell in headings if _heading(cell.text)[0] == "wall_mark"]
+    if not (marks or wall_marks):
         return []
 
     def position(cell):
@@ -211,7 +240,7 @@ def read_opening_schedule(
     index = SpatialIndex(cells.values(), position)
     mark_index = SpatialIndex(marks, position)
     rows = []
-    for header in sorted(marks, key=lambda cell: (-cell.y, cell.x)):
+    for header in sorted([*marks, *wall_marks], key=lambda cell: (-cell.y, cell.x)):
         rows.extend(_row_table(header, headings, index, row_tolerance, max_row_gap))
     for header in headings:
         if _heading(header.text)[0] == "size" and (row := _opening_card(header, mark_index, index)):

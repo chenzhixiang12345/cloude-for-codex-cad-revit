@@ -24,11 +24,13 @@ from tumo_engine.recognize.standard_floors import expand_standard_floors, standa
 from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_areas
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
-from tumo_engine.tables import read_opening_schedule
+from tumo_engine.tables import WallOpeningScheduleRow, read_opening_schedule
 from tumo_engine.tables.levels import read_level_schedule
 
 
-_OPENING_TABLE = re.compile(r"门窗(?:表|详图|大样)|(?:门|窗)表|(?:door|window)[-_ ]*schedule", re.I)
+_OPENING_TABLE = re.compile(
+    r"门窗(?:表|详图|大样)|(?:门|窗)表|墙(?:上)?洞(?:口)?表|(?:door|window|wall[-_ ]*opening)[-_ ]*schedule", re.I,
+)
 _ELEVATION_DRAWING = re.compile(r"立剖面|立面图|剖面图|(?:^|[-_ ])(?:elevation|section)(?:$|[-_ ])", re.I)
 _OPENING_PREFIX = {"door": "D", "window": "WIN", "wall_opening": "WO"}
 
@@ -89,8 +91,9 @@ def _opening_schedules(drawing, root, inline_items, issue, read_companion):
         for row in table:
             rows.append(row)
             trace = f"schedule_row:{relative}:" + ",".join(row.handles)
-            if trace not in evidence[row.mark]:
-                evidence[row.mark].append(trace)
+            key = (row.mark, isinstance(row, WallOpeningScheduleRow))
+            if trace not in evidence[key]:
+                evidence[key].append(trace)
     inline_handles = {handle for row in inline_rows for handle in row.handles}
     return rows, evidence, inline_handles
 
@@ -175,7 +178,7 @@ def _add_openings(model, items, sheet_items, drawing, root, rules, issue, read_c
             "base_level": host["base_level"],
             "source": {"sheet": sheet["id"], "handles": candidate.pop("handles")},
         })
-        candidate["evidence"].extend(evidence[mark])
+        candidate["evidence"].extend(evidence[(mark, category == "wall_opening")])
         model["elements"].append(candidate)
         if category != "window":
             issue(f"请核对 {mark} 的尺寸和宿主墙。", candidate["id"], at)

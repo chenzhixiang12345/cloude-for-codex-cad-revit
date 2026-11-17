@@ -13,10 +13,11 @@ from shapely.geometry import Point
 from tumo_engine.index import SpatialIndex
 from tumo_engine.preprocess import Primitive, layer_key
 from tumo_engine.recognize.geometry import Segment, dot, parallel, rounded, segments, source_handles, world
-from tumo_engine.tables import OpeningScheduleRow
+from tumo_engine.tables import OpeningScheduleRow, WallOpeningScheduleRow
 
 _DOOR_LAYER = re.compile(r"(?:^|[-_])DOOR(?:$|[-_])|^(?:门洞|门扇|门框)$")
 _WINDOW_LAYER = re.compile(r"(?:^|[-_])(?:WIND|WINDOW)(?:$|[-_])|^(?:窗洞|窗扇|窗框)$")
+_WALL_OPENING_LAYER = re.compile(r"^(?:(?:A|AE)[-_])?(?:WALL[-_](?:OPENING|HOLE)|墙(?:上|体)?洞口|墙洞)$")
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,10 @@ def _mark(text):
 def _opening_segments(items):
     for item in items:
         layer = layer_key(item.layer)
+        if _WALL_OPENING_LAYER.fullmatch(layer):
+            for segment in segments([item]):
+                yield segment, "wall_opening"
+            continue
         door = bool(_DOOR_LAYER.search(layer))
         window = bool(_WINDOW_LAYER.search(layer))
         if door != window:
@@ -57,7 +62,7 @@ def _hosts(walls):
                         (wall.get("source") or {}).get("sheet"))
 
 
-def _center_on_host(symbol, host, host_tolerance, angle_tolerance):
+def _center_on_host(symbol, host, host_tolerance, angle_tolerance, wall_opening_width=None):
     line = host.centerline
     axis = line.axis
     if not parallel(axis, symbol.axis, angle_tolerance):
@@ -71,7 +76,12 @@ def _center_on_host(symbol, host, host_tolerance, angle_tolerance):
     allowed = host.thickness / 2 + host_tolerance
     if any(abs(dot(endpoint, normal) - offset) > allowed for endpoint in (symbol.a, symbol.b)):
         return None
-    return world((low + high) / 2, offset, axis)
+    middle = (low + high) / 2
+    if wall_opening_width is not None and (
+        middle - wall_opening_width / 2 < start - 1 or middle + wall_opening_width / 2 > end + 1
+    ):
+        return None
+    return world(middle, offset, axis)
 
 
 def _matching_wall_pairs(symbol, hosts, width, host_tolerance, rules):
@@ -136,7 +146,8 @@ def recognize_openings(
 ) -> tuple[list[dict], list[dict]]:
     """Return opening candidates and located issues for exact scheduled tags.
 
-    Only measured line segments on explicit door/window layers are used.
+    Door, window and wall opening symbols use measured line segments on dedicated layers.
+    A wall opening additionally requires a wall schedule row with a relative bottom.
     Width and position tolerances are in millimeters. Each host must have an
     ID and a centerline spanning the measured opening. When wall pair rules
     are supplied, a unique pair may instead return an internal ``wall_pair``
@@ -144,9 +155,11 @@ def recognize_openings(
     The caller supplies each candidate's final ID, floor, and sheet source.
     """
     dimensions = defaultdict(set)
+    wall_dimensions = defaultdict(set)
     for row in schedule:
-        dimensions[_mark(row.mark)].add((row.width, row.height, row.sill_height))
-    if not dimensions:
+        rows = wall_dimensions if isinstance(row, WallOpeningScheduleRow) else dimensions
+        rows[_mark(row.mark)].add((row.width, row.height, row.sill_height))
+    if not (dimensions or wall_dimensions):
         return [], []
 
     items = list(items)
@@ -158,19 +171,43 @@ def recognize_openings(
     issues = []
     proposals = defaultdict(list)
     for label in items:
-        if label.kind != "text" or (mark := _mark(label.text)) not in dimensions:
+        if label.kind != "text":
             continue
-        if len(dimensions[mark]) != 1:
-            issues.append(_issue(label, mark, "schedule_conflict", "门窗表中存在不同的尺寸。"))
+        mark = _mark(label.text)
+        ordinary = dimensions.get(mark)
+        wall_openings = wall_dimensions.get(mark)
+        if not (ordinary or wall_openings):
             continue
-        (width, height, sill), = dimensions[mark]
+
+        symbols_at_label = symbols.nearby(Point(label.points[0]), label_radius)
+        is_wall = not ordinary
+        if ordinary and wall_openings:
+            matching_kinds = set()
+            for segment, category in symbols_at_label:
+                wall_kind = category == "wall_opening"
+                group = wall_openings if wall_kind else ordinary
+                if any(abs(segment.length - width) <= width_tolerance for width, _, _ in group):
+                    matching_kinds.add(wall_kind)
+            if len(matching_kinds) > 1:
+                issues.append(_issue(label, mark, "opening_ambiguous", "同一标注附近有符合尺寸的墙洞和门窗。"))
+                continue
+            is_wall = True in matching_kinds
+
+        measurements = wall_openings if is_wall else ordinary
+        if len(measurements) != 1:
+            source = "墙洞表中存在不同的尺寸或洞底高度。" if is_wall else "门窗表中存在不同的尺寸。"
+            issues.append(_issue(label, mark, "schedule_conflict", source))
+            continue
+        (width, height, sill), = measurements
         nearby = [
-            (segment, category)
-            for segment, category in symbols.nearby(Point(label.points[0]), label_radius)
-            if abs(segment.length - width) <= width_tolerance
+            (segment, category) for segment, category in symbols_at_label
+            if (category == "wall_opening") == is_wall and abs(segment.length - width) <= width_tolerance
         ]
         if not nearby:
             issues.append(_issue(label, mark, "opening_evidence_missing", "标注附近没有尺寸相符的洞口线。"))
+            continue
+        if is_wall and sill is None:
+            issues.append(_issue(label, mark, "wall_opening_bottom_missing", "缺少明确的洞底相对标高。"))
             continue
 
         nearby_walls = [
@@ -180,10 +217,10 @@ def recognize_openings(
         matches = defaultdict(list)
         for symbol, category, possible in nearby_walls:
             for host in possible:
-                center = _center_on_host(symbol, host, host_tolerance, angle_tolerance)
+                center = _center_on_host(symbol, host, host_tolerance, angle_tolerance, width if is_wall else None)
                 if center is not None:
                     matches[((host.id,), category, tuple(rounded(center)))].extend(symbol.primitives)
-        if not matches and wall_pair_rules is not None:
+        if not matches and not is_wall and wall_pair_rules is not None:
             for symbol, category, possible in nearby_walls:
                 for pair, at in _matching_wall_pairs(symbol, possible, width, host_tolerance, wall_pair_rules):
                     matches[(pair, category, at)].extend(symbol.primitives)
@@ -225,5 +262,7 @@ def recognize_openings(
             candidate["evidence"].append("wall:paired_ends")
         if sill is not None:
             candidate["sill_height"] = sill
+        if category == "wall_opening":
+            candidate["evidence"].append("schedule:wall_opening_relative_bottom")
         result.append(candidate)
     return result, issues

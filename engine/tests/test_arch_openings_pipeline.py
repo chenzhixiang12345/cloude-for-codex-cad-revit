@@ -131,3 +131,37 @@ def test_plan_uses_uniquely_located_window_sill_and_preserves_section_source(tmp
     assert window["sill_height"] == 750
     assert f"sill_height:剖面图.dxf:{note.dxf.handle}" in window["evidence"]
     assert not any("缺少窗台高度" in issue["message"] for issue in model["issues"])
+
+
+def test_plan_reads_wall_opening_schedule_and_binds_its_bottom_height(tmp_path):
+    drawing = tmp_path / "三层平面图.dxf"
+    doc = ezdxf.new(units=4)
+    space = doc.modelspace()
+    for y in (-100, 100):
+        space.add_line((0, y), (4000, y), dxfattribs={"layer": "WALL"})
+    space.add_line((800, 0), (1400, 0), dxfattribs={"layer": "A-WALL-OPENING"})
+    space.add_text("DK1", dxfattribs={"insert": (1100, 250)})
+    space.add_line((2200, 0), (3100, 0), dxfattribs={"layer": "A-DOOR"})
+    space.add_text("DK1", dxfattribs={"insert": (2650, 250)})
+    doc.saveas(drawing)
+    schedule = ezdxf.new(units=4)
+    table = schedule.modelspace()
+    for index, row in enumerate((("墙洞编号", "洞口尺寸", "洞底高(mm)"), ("DK1", "600×700", "1200"))):
+        for x, text in zip((0, 1500, 3000), row):
+            table.add_text(text, dxfattribs={"insert": (x, 1000 - 500 * index)})
+    schedule.saveas(tmp_path / "墙洞口表.dxf")
+    door_schedule = ezdxf.new(units=4)
+    _table(door_schedule.modelspace(), "DK1", 900)
+    door_schedule.saveas(tmp_path / "门窗表.dxf")
+
+    model = run(drawing)
+
+    TumoModel.model_validate(model)
+    wall, opening, door = model["elements"]
+    assert opening["category"] == "wall_opening"
+    assert opening["host"] == wall["id"]
+    assert opening["type"] == {"mark": "DK1", "width": 600, "height": 700}
+    assert opening["sill_height"] == 1200
+    assert door["category"] == "door"
+    assert {entry.split(":")[1] for entry in opening["evidence"] if entry.startswith("schedule_row:")} == {"墙洞口表.dxf"}
+    assert {entry.split(":")[1] for entry in door["evidence"] if entry.startswith("schedule_row:")} == {"门窗表.dxf"}
