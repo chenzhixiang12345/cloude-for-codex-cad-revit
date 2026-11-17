@@ -98,3 +98,17 @@ def test_does_not_read_distant_unrelated_floor_numbers_as_contiguous_schedule():
 
     assert row.number == 1
     assert not warnings
+
+
+def test_keeps_tightly_spaced_level_rows_separate_with_default_tolerance():
+    items = cells([
+        (0, 0, "层号", "A"), (1200, 0, "标高(m)", "B"),
+        (0, -350, "4", "C"), (1200, -340, "10.750", "D"),
+        (0, -525, "3", "E"), (1200, -516, "7.750", "F"),
+        (0, -700, "2", "G"), (1200, -691, "4.750", "H"),
+    ], layer="S_TABL_NUMB")
+
+    rows, warnings = read_level_schedule(items, discipline="struct")
+
+    assert [(row.number, row.elevation_struct) for row in rows] == [(2, 4750), (3, 7750), (4, 10750)]
+    assert not warnings

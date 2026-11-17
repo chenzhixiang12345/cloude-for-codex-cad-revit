@@ -25,6 +25,8 @@ _RANGE = re.compile(
 _ADDITIONAL_FLOOR = re.compile(_FLOOR_TOKEN, re.I)
 _EXCEPTION = re.compile(r"不含|不包括|除外|除去|跳过|隔层|单数层|双数层|奇数层|偶数层|非连续")
 _PLAN = re.compile(r"平面图|FLOOR\s*PLAN", re.I)
+_SLAB_TOP = re.compile(r"层\s*顶板(?:平法施工图|平面(?:施工)?图)$")
+_SINGLE_FLOOR = re.compile(rf"(?<![\dA-Z零一二三四五六七八九十])(?:第\s*)?(?P<floor>{_FLOOR})\s*层$")
 _LEVEL_TOLERANCE = 0.001
 _REUSABLE = {
     "wall": "W", "column": "C", "door": "D", "window": "WIN", "wall_opening": "WO",
@@ -164,6 +166,25 @@ def standard_floor_span(title: str) -> tuple[tuple[int, int] | None, str | None]
     if first is None or last is None or first < 1 or last <= first:
         return None, "图名需要明确的正向连续楼层范围，才能复用标准层。"
     return (first, last), None
+
+
+def slab_top_floor_span(title: str) -> tuple[int, int] | None:
+    """Bind a floor's ceiling slab to the level forming its upper surface."""
+    title = normalize("NFKC", title).strip()
+    if not (suffix := _SLAB_TOP.search(title)):
+        return None
+    floor_title = title[:suffix.start()] + "层"
+    if _EXCEPTION.search(floor_title):
+        return None
+    if _RANGE.search(floor_title):
+        span, _ = standard_floor_span(floor_title + "平面图")
+        return (span[0] + 1, span[1] + 1) if span else None
+    if (match := _SINGLE_FLOOR.search(floor_title)) and not _ADDITIONAL_FLOOR.search(floor_title[:match.start()]):
+        floor = _floor_number(match["floor"].upper())
+        if floor not in (None, 0):
+            upper = 1 if floor == -1 else floor + 1
+            return upper, upper
+    return None
 
 
 def expand_standard_floors(

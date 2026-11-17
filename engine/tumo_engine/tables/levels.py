@@ -126,27 +126,37 @@ def _table_columns(header, headings, row_tolerance):
 
 
 def _table_rows(header, columns, index, row_tolerance, max_row_gap):
-    # Find a floor row in the next gap and collect the numeric cells aligned to its columns.
+    # Follow row anchors by position. Midpoints keep adjacent rows from sharing numbers.
     centers = [header.x, *(column.x for column, _, _ in columns)]
     tolerance = min(b - a for a, b in zip(centers, centers[1:]) if b > a) * .4
     for direction in (-1, 1):
-        y = header.y
+        anchors = [(header, None)]
         while True:
-            low, high = sorted((y + direction * row_tolerance, y + direction * max_row_gap))
-            markers = [
+            previous = anchors[-1][0].y
+            low, high = sorted((previous, previous + direction * max_row_gap))
+            minimum_gap = row_tolerance if len(anchors) == 1 else 0
+            nearby = [
                 (cell, floor) for cell in index.nearby(box(header.x - tolerance, low, header.x + tolerance, high), 0)
-                if (cell.y - y) * direction > row_tolerance and (floor := _floor(cell.text))
+                if (cell.y - previous) * direction > minimum_gap and (floor := _floor(cell.text))
             ]
-            if not markers:
+            if not nearby:
                 break
-            marker, identity = min(markers, key=lambda pair: (
-                abs(pair[0].y - y), abs(pair[0].x - header.x), pair[0].text,
-            ))
+            marker = min(nearby, key=lambda pair: (abs(pair[0].y - previous), abs(pair[0].x - header.x), pair[0].text))
+            anchors.append(marker)
+        for position, (marker, identity) in enumerate(anchors[1:], start=1):
             y = marker.y
+            inward = (y + anchors[position - 1][0].y) / 2
+            adjacent = position + 1 < len(anchors)
+            outward = (y + anchors[position + 1][0].y) / 2 if adjacent else y + direction * row_tolerance
+            row_edges = {inward, outward} if adjacent else {inward}
+            low, high = sorted((inward, outward))
             row = _Values(handles=set((*header.handles, *marker.handles)))
             for column, key, unit in columns:
-                window = box(column.x - tolerance, y - row_tolerance, column.x + tolerance, y + row_tolerance)
+                window = box(column.x - tolerance, max(low, y - row_tolerance),
+                             column.x + tolerance, min(high, y + row_tolerance))
                 for cell in index.nearby(window, 0):
+                    if cell.y in row_edges:
+                        continue
                     value = _number_in_cell(cell.text, unit)
                     if value is not None and (key != "height" or value > 0):
                         row.measurements[key].add(value)
