@@ -41,12 +41,12 @@ internal static class ModelBuilder
                 Top: levels.Values.Max(level => level.ProjectElevation) + gridPadding);
             foreach (var grid in model.Grids)
                 CreateGrid(document, grid, existingGrids, ids, model, sheets, gridExtents);
-            var originNotice = ProjectOrigin.Verify(document, model, existingGrids, log);
 
             var types = new ModelTypes(document, log);
             var dimensions = candidates.ToDictionary(e => e.Id, e => GetExtent(e, levels, defaultBase));
             types.Prepare(candidates);
             document.Regenerate();
+            var originNotice = ProjectOrigin.Verify(document, model, existingGrids, log);
 
             var created = new Dictionary<string, Element>(StringComparer.Ordinal);
             foreach (var source in candidates)

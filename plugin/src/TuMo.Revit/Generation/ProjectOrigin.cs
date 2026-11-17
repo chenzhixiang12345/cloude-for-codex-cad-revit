@@ -21,9 +21,10 @@ internal static class ProjectOrigin
         if (originAxes is { Length: > 0 })
         {
             if (originAxes.Length != 2 || !grids.TryGetValue(originAxes[0], out var first)
-                || !grids.TryGetValue(originAxes[1], out var second)
-                || first.Curve is not Line firstLine || second.Curve is not Line secondLine)
+                || !grids.TryGetValue(originAxes[1], out var second))
                 throw new InvalidOperationException("无法核对识别结果指定的原点轴网。请检查轴号和轴线。");
+            if (first.Curve is not Line firstLine || second.Curve is not Line secondLine)
+                throw new InvalidOperationException($"原点轴网 {originAxes[0]} 与 {originAxes[1]} 缺少直线几何。");
 
             var intersection = Intersect(firstLine, secondLine);
             if (intersection == null)
