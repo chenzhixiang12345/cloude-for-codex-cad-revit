@@ -43,6 +43,11 @@ level:
   default_height: 3000
   row_tolerance: 180
 opening:
+  door_frame:
+    label_layers: '^(?:AD[-_]NUMB|A[-_]DOOR[-_]LABEL|DOOR[-_]TEXT)$'
+    mark_pattern: '(?:(?:F?M|WM)(?:甲|乙|丙)?|D)\d[A-Z0-9*\-/]*'
+    radius: 550
+    width_tolerance: 5
   window_number:
     label_layers: '^(?:AD[-_]NUMB|WINDOW[-_]TEXT|A[-_]WINDOW[-_]LABEL)$'
     mark_pattern: '[A-Z][A-Z甲乙丙]{0,7}[-_]?\d[A-Z0-9甲乙丙*\-/]*'

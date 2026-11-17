@@ -87,3 +87,54 @@ def test_rejects_door_shapes_without_unique_same_instance_evidence(reason):
     doc.modelspace().add_blockref("DOOR", (1000, 1000))
 
     assert not _opening_segments(doc)
+
+
+@pytest.mark.parametrize("corner,extra_frame", [
+    (False, None), (True, None), (True, "unhosted"), (True, "closer_number"), (True, "unrelated_number"),
+])
+def test_pipeline_uses_measured_frame_width_for_a_scheduled_door(tmp_path, corner, extra_frame):
+    from tumo_engine.export.model import TumoModel
+    from tumo_engine.pipeline import run
+
+    doc = ezdxf.new(units=4)
+    block = doc.blocks.new("DOOR")
+    parts = _frame_parts(block)
+    drawing = doc.modelspace()
+    insert = drawing.add_blockref("DOOR", (1300, 0))
+    label = drawing.add_text("WM0924A", dxfattribs={"insert": (1745, 500), "layer": "AD-NUMB"})
+    if extra_frame == "unhosted":
+        drawing.add_blockref("DOOR", (1850, 0), dxfattribs={"rotation": 90})
+    if extra_frame == "unrelated_number":
+        drawing.add_text("FM乙0924A", dxfattribs={"insert": (1745, -100), "layer": "AD-NUMB"})
+    if extra_frame == "closer_number":
+        drawing.add_blockref("DOOR", (1300, 820))
+        drawing.add_text("FM乙0924A", dxfattribs={"insert": (1745, 850), "layer": "AD-NUMB"})
+        for y in (750, 950):
+            drawing.add_line((0, y), (4000, y), dxfattribs={"layer": "WALL"})
+    for y in (-70, 130):
+        drawing.add_line((0, y), (1270 if corner else 4000, y), dxfattribs={"layer": "WALL"})
+    if corner:
+        wall_face = drawing.add_lwpolyline([(2220, -70), (2290, -70), (2290, 130), (2220, 130)],
+                                           close=True, dxfattribs={"layer": "AE-WALL"})
+    for x, y, value in ((0, 4500, "门窗编号"), (1500, 4500, "洞口尺寸"),
+                        (0, 4000, "WM0924A"), (1500, 4000, "950×2400")):
+        drawing.add_text(value, dxfattribs={"insert": (x, y)})
+    path = tmp_path / "三层建筑平面图.dxf"
+    doc.saveas(path)
+
+    model = run(path)
+
+    TumoModel.model_validate(model)
+    [door] = [element for element in model["elements"] if element["category"] == "door"]
+    wall = next(element for element in model["elements"] if element["id"] == door["host"])
+    assert wall["category"] == "wall"
+    assert door["host"] == wall["id"]
+    assert door["type"] == {"mark": "WM0924A", "width": 950, "height": 2400}
+    assert door["geometry"]["at"] == [1745, 30]
+    assert "door:swing_and_jambs" in door["evidence"]
+    assert set(door["source"]["handles"]) == {insert.dxf.handle, label.dxf.handle, *(part.dxf.handle for part in parts)}
+    if corner:
+        assert wall["geometry"]["end"] == [2220, 30]
+        assert "wall:verified_corner_face" in door["evidence"]
+        assert "opening:verified_corner_host" in wall["evidence"]
+        assert wall_face.dxf.handle in wall["source"]["handles"]

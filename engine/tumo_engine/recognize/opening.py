@@ -12,6 +12,8 @@ from shapely.geometry import Point
 
 from tumo_engine.index import SpatialIndex
 from tumo_engine.preprocess import Primitive, layer_key
+from tumo_engine.recognize.door_hosts import corner_door_host
+from tumo_engine.recognize.door_symbols import door_frame_openings
 from tumo_engine.recognize.geometry import Segment, dot, parallel, rounded, segments, source_handles, world
 from tumo_engine.tables import OpeningScheduleRow, WallOpeningScheduleRow
 
@@ -27,6 +29,19 @@ class _Host:
     thickness: float
     level_span: tuple
     sheet: str | None
+
+
+@dataclass
+class _Proposal:
+    label: Primitive
+    mark: str
+    category: str
+    width: float
+    height: float
+    sill: float | None
+    sources: list[Primitive]
+    evidence: list[str]
+    extension: dict | None = None
 
 
 def _mark(text):
@@ -133,6 +148,12 @@ def _issue(label, mark, code, description):
     return {"code": code, "mark": mark, "message": f"{mark}：{description}", "at": rounded(label.points[0])}
 
 
+def _has_closer_number(label, geometry, numbers):
+    distance = geometry.distance(Point(label.points[0]))
+    return any(_mark(other.text) != _mark(label.text) and geometry.distance(Point(other.points[0])) < distance
+               for other in numbers.nearby(geometry, distance))
+
+
 def _verified_window_gaps(label, width, symbols, walls, numbers, host_distance, pair_rules, number_rules):
     """Allow a farther window number only at a measured, uniquely supported gap."""
     radius = number_rules["radius"]
@@ -144,9 +165,7 @@ def _verified_window_gaps(label, width, symbols, walls, numbers, host_distance, 
         if category != "window" or abs(symbol.length - width) > width_tolerance:
             continue
         geometry = symbol.geometry
-        distance = geometry.distance(origin)
-        if any(_mark(other.text) != _mark(label.text) and geometry.distance(Point(other.points[0])) < distance
-               for other in numbers.nearby(geometry, distance)):
+        if _has_closer_number(label, geometry, numbers):
             continue
         for pair, at in _matching_wall_pairs(symbol, walls.nearby(geometry, host_distance), width,
                                              number_rules["host_tolerance"], strict_pairs):
@@ -160,6 +179,13 @@ def _verified_window_gaps(label, width, symbols, walls, numbers, host_distance, 
     return matches
 
 
+def _symbol_hosts(symbol, category, possible, width, host_tolerance, angle_tolerance):
+    for host in possible:
+        center = _center_on_host(symbol, host, host_tolerance, angle_tolerance, width)
+        if center is not None:
+            yield (host.id,), category, tuple(rounded(center))
+
+
 def recognize_openings(
     items: Iterable[Primitive],
     walls: Iterable[dict],
@@ -171,6 +197,8 @@ def recognize_openings(
     angle_tolerance: float = 5,
     wall_pair_rules: Mapping[str, float] | None = None,
     window_number_rules: Mapping | None = None,
+    door_frame_rules: Mapping | None = None,
+    corner_rules: Mapping | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Return opening candidates and located issues for exact scheduled tags.
 
@@ -179,7 +207,8 @@ def recognize_openings(
     Width and position tolerances are in millimeters. Each host must have an
     ID and a centerline spanning the measured opening. When wall pair rules
     are supplied, a unique pair may instead return an internal ``wall_pair``
-    with no ``host``; the caller must reconcile the pair before export.
+    with no ``host``. A measured door at a verified wall face may return a
+    ``wall_extension``. The caller reconciles these host changes before export.
     The caller supplies each candidate's final ID, floor, and sheet source.
     """
     dimensions = defaultdict(set)
@@ -191,7 +220,16 @@ def recognize_openings(
         return [], []
 
     items = list(items)
+    walls = list(walls)
     symbols = SpatialIndex(_opening_segments(items), lambda item: item[0].geometry)
+    frames = SpatialIndex(door_frame_openings(items), lambda segment: segment.geometry) if door_frame_rules else None
+    if frames is not None:
+        door_number_layer = re.compile(door_frame_rules["label_layers"], re.IGNORECASE)
+        door_mark_pattern = re.compile(door_frame_rules["mark_pattern"], re.IGNORECASE)
+        door_numbers = SpatialIndex((item for item in items if item.kind == "text"
+                                     and door_number_layer.search(layer_key(item.layer))
+                                     and door_mark_pattern.fullmatch(_mark(item.text))),
+                                    lambda item: Point(item.points[0]))
     hosts = list(_hosts(walls))
     wall_index = SpatialIndex(hosts, lambda host: host.centerline.geometry)
     maximum_half_thickness = max((host.thickness / 2 for host in hosts), default=0)
@@ -239,6 +277,13 @@ def recognize_openings(
             (segment, category) for segment, category in symbols_at_label
             if (category == "wall_opening") == is_wall and abs(segment.length - width) <= width_tolerance
         ]
+        measured = []
+        if (not is_wall and frames is not None and door_number_layer.search(layer_key(label.layer))
+                and door_mark_pattern.fullmatch(mark)):
+            measured = [symbol for symbol in frames.nearby(Point(label.points[0]), door_frame_rules["radius"])
+                        if abs(symbol.length - width) <= door_frame_rules["width_tolerance"]]
+            if measured:
+                nearby = [(symbol, "door") for symbol in measured]
         if nearby and is_wall and sill is None:
             issues.append(_issue(label, mark, "wall_opening_bottom_missing", "缺少明确的洞底相对标高。"))
             continue
@@ -248,21 +293,37 @@ def recognize_openings(
             for symbol, category in nearby
         ]
         matches = defaultdict(list)
+        extensions_by_match = {}
+        uncontested_doors = set()
         for symbol, category, possible in nearby_walls:
-            for host in possible:
-                center = _center_on_host(symbol, host, host_tolerance, angle_tolerance, width if is_wall else None)
-                if center is not None:
-                    matches[((host.id,), category, tuple(rounded(center)))].extend(symbol.primitives)
-        if not matches and not is_wall and wall_pair_rules is not None:
+            keys = list(_symbol_hosts(symbol, category, possible, width if is_wall or measured else None,
+                                      host_tolerance, angle_tolerance))
+            if not keys and measured and wall_pair_rules is not None:
+                keys = [(pair, category, at) for pair, at in _matching_wall_pairs(
+                    symbol, possible, width, host_tolerance, wall_pair_rules)]
+            if not keys and measured and corner_rules is not None:
+                extension = corner_door_host(symbol, width, walls, items, corner_rules)
+                if extension:
+                    key = ((extension["host"],), category, tuple(extension["at"]))
+                    keys.append(key)
+                    extensions_by_match[key] = extension
+            for key in keys:
+                matches[key].extend(symbol.primitives)
+            if keys and len(measured) > 1 and not _has_closer_number(label, symbol.geometry, door_numbers):
+                uncontested_doors.update(keys)
+        if len(matches) > 1 and uncontested_doors:
+            matches = {key: sources for key, sources in matches.items() if key in uncontested_doors}
+        if not matches and not is_wall and not measured and wall_pair_rules is not None:
             for symbol, category, possible in nearby_walls:
                 for pair, at in _matching_wall_pairs(symbol, possible, width, host_tolerance, wall_pair_rules):
                     matches[(pair, category, at)].extend(symbol.primitives)
-        far_window = False
-        if (not nearby and not is_wall and numbers is not None and number_layer.search(layer_key(label.layer))
+        evidence = ["door:swing_and_jambs"] if measured else []
+        if (not nearby and not is_wall and not measured and numbers is not None and number_layer.search(layer_key(label.layer))
                 and window_mark_pattern.fullmatch(mark)):
             matches = _verified_window_gaps(label, width, symbols, wall_index, numbers,
                                              maximum_half_thickness + host_tolerance, wall_pair_rules, window_number_rules)
-            far_window = bool(matches)
+            if matches:
+                evidence.append("window:two_strokes_verified_gap")
         if not matches:
             code = "host_missing" if nearby else "opening_evidence_missing"
             message = "没有找到覆盖该洞口的宿主墙。" if nearby else "标注附近没有尺寸相符的洞口线。"
@@ -275,21 +336,26 @@ def recognize_openings(
             issues.append(_issue(label, mark, code, message))
             continue
         (host, category, at), sources = next(iter(matches.items()))
-        proposals[(host, at)].append((label, mark, category, width, height, sill, sources, far_window))
+        extension = extensions_by_match.get((host, category, at))
+        if extension:
+            evidence.append("wall:verified_corner_face")
+        proposals[(host, at)].append(_Proposal(label, mark, category, width, height, sill, sources, evidence, extension))
 
     result = []
     for (host, at), options in proposals.items():
-        _, mark, category, width, height, sill, _, _ = options[0]
-        if len({(tag, kind) for _, tag, kind, *_ in options}) > 1:
-            for label, tag, *_ in options:
-                issues.append(_issue(label, tag, "mark_ambiguous", "同一个洞口对应多个标注或类型。"))
+        selected = options[0]
+        if len({(option.mark, option.category) for option in options}) > 1:
+            for option in options:
+                issues.append(_issue(option.label, option.mark, "mark_ambiguous", "同一个洞口对应多个标注或类型。"))
             continue
-        handles = source_handles(
-            item for label, *_, sources, _fallback in options for item in [label, *sources]
-        )
+        extensions = [option.extension for option in options if option.extension is not None]
+        if extensions and any(change != extensions[0] for change in extensions):
+            issues.append(_issue(selected.label, selected.mark, "host_ambiguous", "标注对应不同的转角墙面。"))
+            continue
+        handles = source_handles(item for option in options for item in (option.label, *option.sources))
         candidate = {
-            "category": category,
-            "type": {"mark": mark, "width": width, "height": height},
+            "category": selected.category,
+            "type": {"mark": selected.mark, "width": selected.width, "height": selected.height},
             "geometry": {"kind": "point", "at": list(at)},
             "confidence": 0.8,
             "evidence": ["schedule:exact_mark", "line:width_match"],
@@ -298,14 +364,15 @@ def recognize_openings(
         if len(host) == 1:
             candidate["host"] = host[0]
             candidate["evidence"].append("wall:unique_host")
+            if extensions:
+                candidate["wall_extension"] = extensions[0]
         else:
             candidate["wall_pair"] = list(host)
             candidate["evidence"].append("wall:paired_ends")
-        if any(option[-1] for option in options):
-            candidate["evidence"].append("window:two_strokes_verified_gap")
-        if sill is not None:
-            candidate["sill_height"] = sill
-        if category == "wall_opening":
+        candidate["evidence"].extend(sorted({entry for option in options for entry in option.evidence}))
+        if selected.sill is not None:
+            candidate["sill_height"] = selected.sill
+        if selected.category == "wall_opening":
             candidate["evidence"].append("schedule:wall_opening_relative_bottom")
         result.append(candidate)
     return result, issues

@@ -99,15 +99,17 @@ def _opening_schedules(drawing, root, inline_items, issue, read_companion):
 
 
 def _restore_opening_hosts(model, candidates, hosts, issue):
-    pairs = Counter(wall for candidate in candidates for wall in candidate.get("wall_pair", ()))
+    edited_hosts = Counter(wall for candidate in candidates for wall in candidate.get("wall_pair", ()))
+    edited_hosts.update(candidate["wall_extension"]["host"] for candidate in candidates if "wall_extension" in candidate)
     remapped = {}
     rebuilt = []
     accepted = []
     for candidate in candidates:
         pair = candidate.pop("wall_pair", None)
+        extension = candidate.pop("wall_extension", None)
         if pair:
             first, second = (hosts[identifier] for identifier in pair)
-            if (any(pairs[identifier] > 1 for identifier in pair)
+            if (any(edited_hosts[identifier] > 1 for identifier in pair)
                     or first["type"].get("material") != second["type"].get("material")):
                 issue("两侧墙无法唯一合并为洞口宿主。请对照墙端和材料。", at=candidate["geometry"]["at"])
                 continue
@@ -135,6 +137,15 @@ def _restore_opening_hosts(model, candidates, hosts, issue):
             rebuilt.append(wall)
             hosts[identifier] = wall
             candidate["host"] = identifier
+        if extension:
+            identifier = extension["host"]
+            if edited_hosts[identifier] > 1:
+                issue("多个洞口需要调整同一宿主墙。请对照原图。", at=candidate["geometry"]["at"])
+                continue
+            wall = hosts[identifier]
+            wall["geometry"] = extension["geometry"]
+            wall["evidence"] = sorted(set(wall["evidence"] + ["opening:verified_corner_host"]))
+            wall["source"]["handles"] = sorted(set(wall["source"]["handles"] + extension["handles"]))
         accepted.append(candidate)
 
     if remapped:
@@ -164,7 +175,8 @@ def _add_openings(model, items, sheet_items, drawing, root, rules, issue, read_c
     )
     opening_rules = rules["opening"]
     candidates, issues = recognize_openings(plan_items, hosts.values(), schedule, wall_pair_rules=opening_rules["wall_pair"],
-                                           window_number_rules=opening_rules["window_number"])
+                                           window_number_rules=opening_rules["window_number"],
+                                           door_frame_rules=opening_rules["door_frame"], corner_rules=rules)
     for entry in issues:
         issue(entry["message"], at=entry["at"])
 
