@@ -87,6 +87,44 @@ def _elevations(args):
     print(args.output)
 
 
+def _structural_evidence(args):
+    from dataclasses import asdict
+
+    from tumo_engine.io.dxf_reader import read_dxf
+    from tumo_engine.preprocess import bind_xrefs, primitives, unit_factor
+    from tumo_engine.rules import defaults
+    from tumo_engine.sheets import drawing_sheets
+    from tumo_engine.tables.beams import read_beam_candidates
+    from tumo_engine.tables.columns import read_column_schedules
+
+    source = args.drawing.resolve()
+    drawing = read_dxf(source)
+    xref_warnings = bind_xrefs(drawing, source, source.parent)
+    rules = defaults()
+    metadata = {}
+    if args.category == "columns":
+        candidates, issues = read_column_schedules(drawing, rules=rules)
+        if args.sheet:
+            candidates = [candidate for candidate in candidates if candidate["sheet"]["number"] == args.sheet]
+            issues = [issue for issue in issues if issue["sheet"]["number"] == args.sheet]
+    else:
+        factor = unit_factor(drawing)
+        sheets = drawing_sheets(drawing, source, factor, rules["layers"])
+        selected = [sheet for sheet in sheets if (not args.sheet or sheet.number == args.sheet) and sheet.bounds]
+        if len(selected) != 1:
+            raise ValueError("梁证据需要唯一图框。请用 --sheet 指定梁图图号。")
+        sheet = selected[0]
+        items, warnings = primitives(drawing, factor, sheet.bounds)
+        xref_warnings.extend(warnings)
+        beams, notes = read_beam_candidates(drawing, items, rules)
+        candidates, issues = [asdict(beam) for beam in beams], [asdict(note) for note in notes]
+        metadata["sheet"] = asdict(sheet)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(args.output, {"units": "mm", "category": args.category, "source": source.name, **metadata,
+                              "candidates": candidates, "issues": issues, "warnings": list(dict.fromkeys(xref_warnings))})
+    print(args.output)
+
+
 def _run(args):
     from tumo_engine.export.model import TumoModel
     from tumo_engine.pipeline import run
@@ -199,6 +237,12 @@ def main(argv=None):
     elevations.add_argument("-o", "--output", type=Path, default=Path("out/elevations.json"))
     elevations.add_argument("--unit", choices=("m", "cm", "mm"), help="指定标高中省略的单位。")
     elevations.set_defaults(handler=_elevations)
+    evidence = commands.add_parser("structural-evidence", help="输出保留 CAD 句柄的柱表和梁候选证据。")
+    evidence.add_argument("category", choices=("columns", "beams"))
+    evidence.add_argument("drawing", type=Path)
+    evidence.add_argument("--sheet", help="按图号选择图框。多图框梁图必须指定。")
+    evidence.add_argument("-o", "--output", type=Path, default=Path("out/structural-evidence.json"))
+    evidence.set_defaults(handler=_structural_evidence)
     run = commands.add_parser("run", help="识别 DXF、目录或 JSON 任务。")
     run.add_argument("input", type=Path)
     run.add_argument("-o", "--output", type=Path)

@@ -118,6 +118,27 @@ structural_slab:
   outline_tolerance: 0.01
   overlap_tolerance_area: 1.0
   pattern_digits: 6
+beam_candidate:
+  layers:
+    annotation: 'S[-_]BEAM[-_]TEXT[-_]HORZ'
+    section: 'S[-_]BEAM[-_]TEXT[-_]VERT'
+    edge: 'S[-_]BEAM'
+    support: 'S[-_](?:WALL|COLU)'
+  mark_pattern: '(?P<mark>KL\d+)(?:\((?P<span>\d+)(?P<overhang>[AB])?\))?(?P<qualifier>\s+\S.*)?'
+  section_pattern: '(?P<width>\d{2,4})\s*[X×]\s*(?P<height>\d{2,4})'
+  dashed_linetype: '(?:^|\$\d+\$)(?:DASHED|DASH)$'
+  width_range: [100, 1000]
+  height_range: [100, 3000]
+  angle_deg: 0.1
+  minimum_leader_length: 300
+  leader_label_tolerance: 80
+  leader_tip_tolerance: 2
+  minimum_beam_length: 250
+  endpoint_tolerance: 2
+  width_tolerance: 0.05
+  section_distance: 400
+  section_end_margin: 50
+  support_tolerance: 2
 column_schedule:
   frame_pattern: '(?:FRAME|THAPE|BORDER|内框|图框)'
   title_tags: ['内框名称', '图名']
