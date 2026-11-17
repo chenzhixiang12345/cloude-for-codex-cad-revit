@@ -15,7 +15,7 @@ internal static class EngineRunner
 {
     private const int TimeoutMilliseconds = 5 * 60 * 1000;
 
-    public static string Run(string input, RunLog log, FloorMode mode = FloorMode.Single)
+    public static string Run(string input, RunLog log, FloorMode mode = FloorMode.Single, string? structuralSlab = null)
     {
         var assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
         var executable = Path.Combine(assemblyDirectory, "tumo-engine.exe");
@@ -31,7 +31,8 @@ internal static class EngineRunner
             new DataContractJsonSerializer(typeof(Job)).WriteObject(stream, new Job
             {
                 Input = Path.GetFullPath(input),
-                OutputDirectory = output
+                OutputDirectory = output,
+                StructuralSlab = structuralSlab == null ? null : Path.GetFullPath(structuralSlab)
             });
         }
 
@@ -84,5 +85,6 @@ internal static class EngineRunner
     {
         [DataMember(Name = "input")] public string Input { get; set; } = "";
         [DataMember(Name = "output_dir")] public string OutputDirectory { get; set; } = "";
+        [DataMember(Name = "structural_slab", EmitDefaultValue = false)] public string? StructuralSlab { get; set; }
     }
 }

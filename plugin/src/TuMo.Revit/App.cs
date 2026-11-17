@@ -38,6 +38,11 @@ public sealed class App : IExternalApplication
         {
             ToolTip = "按楼层表和共有轴网对齐同一建筑 DXF 内的多张平面图。"
         });
+        panel.AddItem(new PushButtonData("TuMo.MergeStructuralSlabs", "从 DXF\n合并结构降板",
+            Assembly.GetExecutingAssembly().Location, typeof(MergeStructuralSlabsCommand).FullName!)
+        {
+            ToolTip = "选择建筑平面和结构顶板图，按共有轴网与楼层表合并有证据的结构降板。"
+        });
         panel.AddItem(new PushButtonData("TuMo.Review", "从 DXF\n审图",
             Assembly.GetExecutingAssembly().Location, typeof(ReviewCommand).FullName!)
         {

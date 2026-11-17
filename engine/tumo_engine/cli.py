@@ -7,6 +7,7 @@ import json
 import sys
 from io import TextIOWrapper
 from math import isfinite
+from os.path import commonpath
 from pathlib import Path
 
 
@@ -20,18 +21,24 @@ def _bounds(values):
     return tuple(values)
 
 
-def read_job(path: Path):
+def read_job(path: Path, *, with_structural_slab=False):
     job = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(job, dict):
         raise ValueError("任务文件必须包含 JSON 对象。")
     for field in ("input", "output_dir"):
         if not isinstance(job.get(field), str) or not job[field].strip():
             raise ValueError(f"任务文件需要 {field} 路径。")
-    return (
+    base = (
         (path.parent / job["input"]).resolve(),
         (path.parent / job["output_dir"]).resolve(),
         _bounds(job.get("bounds")),
     )
+    if not with_structural_slab:
+        return base
+    structural = job.get("structural_slab")
+    if structural is not None and (not isinstance(structural, str) or not structural.strip()):
+        raise ValueError("任务文件需要有效的 structural_slab 路径。")
+    return *base, (path.parent / structural).resolve() if structural is not None else None
 
 
 def _write_json(path, value):
@@ -84,20 +91,49 @@ def _run(args):
     from tumo_engine.export.model import TumoModel
     from tumo_engine.pipeline import run
 
+    structural_slab = args.structural_slab
     if args.input.suffix.lower() == ".json" and not args.input.is_dir():
         if args.output or args.bounds:
             raise ValueError("请在任务文件中指定输出位置和范围。")
-        source, output, bounds = read_job(args.input)
+        source, output, bounds, job_slab = read_job(args.input, with_structural_slab=True)
+        if structural_slab is not None and job_slab is not None:
+            raise ValueError("结构板图使用一个输入路径。")
+        structural_slab = structural_slab or job_slab
     else:
         source = args.input.resolve()
         output = (args.output or Path("out")).resolve()
         bounds = _bounds(args.bounds)
+    source_root = source if source.is_dir() else source.parent
+    if structural_slab and not args.merge_floors:
+        raise ValueError("合并结构板图时需要同时指定 --merge-floors。")
     if args.merge_floors:
         if bounds is not None:
             raise ValueError("合并楼层需要读取完整 DXF，不能同时指定单张图的范围。")
         from tumo_engine.building_pipeline import run_building
 
         result = run_building(source)
+        if structural_slab:
+            from tumo_engine.recognize.standard_floors import slab_top_floor_span
+            from tumo_engine.recognize.structural_slab_merge import merge_structural_slabs
+
+            structural_file = structural_slab.resolve()
+            if not structural_file.is_file() or structural_file.suffix.lower() != ".dxf":
+                raise ValueError("请选择一份结构板 DXF。")
+            try:
+                combined_root = Path(commonpath((source_root, structural_file.parent)))
+            except ValueError as error:
+                raise ValueError("建筑图与结构板图需要位于同一磁盘。") from error
+            structural = run(structural_file)
+            span = slab_top_floor_span(structural["sheets"][0]["title"])
+            if span and span[0] < span[1]:
+                structural = run(structural_file, repeat_standard_floors=True)
+            def rebase(project, root):
+                sheets = [{**sheet, "file": (root / sheet["file"]).relative_to(combined_root).as_posix()}
+                          for sheet in project["sheets"]]
+                return {**project, "sheets": sheets}
+
+            result = merge_structural_slabs(rebase(result, source_root), rebase(structural, structural_file.parent))
+            source_root = combined_root
     else:
         result = run(source, bounds=bounds, repeat_standard_floors=args.repeat_standard_floors)
     model = TumoModel.model_validate(result)
@@ -105,7 +141,7 @@ def _run(args):
     output.mkdir(parents=True, exist_ok=True)
     _write_json(output / "model.json", model)
     _write_json(output / "issues.json", {"issues": model["issues"]})
-    _write_json(output / "sources.json", {"root": str(source if source.is_dir() else source.parent)})
+    _write_json(output / "sources.json", {"root": str(source_root)})
     print(output / "model.json")
 
 
@@ -170,6 +206,7 @@ def main(argv=None):
     building_mode = run.add_mutually_exclusive_group()
     building_mode.add_argument("--repeat-standard-floors", action="store_true", help="按图名和明确的楼层表复用标准层。")
     building_mode.add_argument("--merge-floors", action="store_true", help="对齐同一 DXF 中建筑平面的标高和共有轴网。")
+    run.add_argument("--structural-slab", type=Path, help="在 --merge-floors 中加入轴网已配准的结构降板图。")
     run.set_defaults(handler=_run)
     render = commands.add_parser("render", help="输出 SVG 和 PNG 识别结果图。")
     render.add_argument("model", type=Path)

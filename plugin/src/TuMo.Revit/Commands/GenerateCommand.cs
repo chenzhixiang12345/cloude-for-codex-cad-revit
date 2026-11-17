@@ -18,7 +18,7 @@ public sealed class GenerateCommand : IExternalCommand
     public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         => Run(commandData, ref message, FloorMode.Single);
 
-    internal static Result Run(ExternalCommandData commandData, ref string message, FloorMode mode)
+    internal static Result Run(ExternalCommandData commandData, ref string message, FloorMode mode, bool includeStructuralSlab = false)
     {
         var document = commandData.Application.ActiveUIDocument?.Document;
         if (document == null || document.IsFamilyDocument || document.IsReadOnly)
@@ -42,6 +42,21 @@ public sealed class GenerateCommand : IExternalCommand
         if (picker.ShowDialog() != true)
             return Result.Cancelled;
 
+        string? structuralSlab = null;
+        if (includeStructuralSlab)
+        {
+            var slabPicker = new OpenFileDialog
+            {
+                Filter = picker.Filter,
+                Title = "选择带楼层表和降板图例的结构顶板 DXF",
+                Multiselect = false,
+                CheckFileExists = true
+            };
+            if (slabPicker.ShowDialog() != true)
+                return Result.Cancelled;
+            structuralSlab = slabPicker.FileName;
+        }
+
         using var log = new RunLog();
         var timer = Stopwatch.StartNew();
         try
@@ -50,7 +65,9 @@ public sealed class GenerateCommand : IExternalCommand
             log.Write($"Revit {application.VersionNumber}, build {application.VersionBuild}; " +
                 $"TuMo {Assembly.GetExecutingAssembly().GetName().Version}");
             log.Write($"输入 {picker.FileName}");
-            var output = EngineRunner.Run(picker.FileName, log, mode);
+            if (structuralSlab != null)
+                log.Write($"结构顶板图 {structuralSlab}");
+            var output = EngineRunner.Run(picker.FileName, log, mode, structuralSlab);
             var model = TuMoModel.Read(Path.Combine(output, "model.json"));
             log.Write($"识别结果，标高 {model.Levels.Length}，轴网 {model.Grids.Length}，构件 {model.Elements.Length}。");
             var reportPath = Path.Combine(output, "issues.json");
@@ -87,4 +104,12 @@ public sealed class MergeFloorsCommand : IExternalCommand
 {
     public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         => GenerateCommand.Run(commandData, ref message, FloorMode.Building);
+}
+
+[Transaction(TransactionMode.Manual)]
+[Regeneration(RegenerationOption.Manual)]
+public sealed class MergeStructuralSlabsCommand : IExternalCommand
+{
+    public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        => GenerateCommand.Run(commandData, ref message, FloorMode.Building, includeStructuralSlab: true);
 }
