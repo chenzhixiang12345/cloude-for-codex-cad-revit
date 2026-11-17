@@ -14,6 +14,15 @@ internal static class RevitApi
 #endif
     }
 
+    public static FamilyParameter FamilyLength(FamilyManager manager, string name)
+    {
+#if REVIT2022_OR_GREATER
+        return manager.AddParameter(name, GroupTypeId.Geometry, SpecTypeId.Length, false);
+#else
+        return manager.AddParameter(name, BuiltInParameterGroup.PG_GEOMETRY, ParameterType.Length, false);
+#endif
+    }
+
     public static long IdValue(ElementId id)
     {
         // The ID moved from Int32 to Int64 in Revit 2024.

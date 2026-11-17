@@ -80,7 +80,7 @@ internal sealed class ModelTypes
         var desiredMaterial = FindMaterial(data.Material);
 
         // Width and depth are also available on steel I-sections and hollow profiles.
-        var compatible = types.Where(type => HasMaterial(type, desiredMaterial) &&
+        var compatible = types.Where(type => !ColumnFamily.IsGenerated(type) && HasMaterial(type, desiredMaterial) &&
             HasColumnShape(type.Family.StructuralSectionShape, round)).ToArray();
         foreach (var type in compatible)
         {

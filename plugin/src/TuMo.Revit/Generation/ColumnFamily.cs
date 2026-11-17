@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Autodesk.Revit.DB;
+using TuMo.Revit.Compat;
 using TuMo.Revit.Logging;
 
 namespace TuMo.Revit.Generation;
@@ -16,6 +18,16 @@ internal static class ColumnFamily
         "柱 構造(メートル単位).rft"
     };
 
+    private static readonly (string Name, BuiltInParameter[] Keys, string[] Aliases) Width = (
+        "TuMo_Width", new[] { BuiltInParameter.STRUCTURAL_SECTION_COMMON_WIDTH, BuiltInParameter.FAMILY_WIDTH_PARAM },
+        new[] { "Width", "宽度", "寬度", "幅", "Largura", "Anchura", "Ancho", "b" });
+    private static readonly (string Name, BuiltInParameter[] Keys, string[] Aliases) Depth = (
+        "TuMo_Depth", new[] { BuiltInParameter.STRUCTURAL_SECTION_COMMON_HEIGHT, BuiltInParameter.GENERIC_DEPTH },
+        new[] { "Depth", "深度", "奥行き", "Profundidade", "Profundidad", "h" });
+    private static readonly (string Name, BuiltInParameter[] Keys, string[] Aliases) Diameter = (
+        "TuMo_Diameter", new[] { BuiltInParameter.STRUCTURAL_SECTION_COMMON_DIAMETER },
+        new[] { "Diameter", "直径", "Diâmetro", "Diámetro", "d" });
+
     public static FamilySymbol Create(Document project, string name, bool round, double width, double depth,
         string? materialName, RunLog log)
     {
@@ -23,7 +35,7 @@ internal static class ColumnFamily
             .Select(family => family.Name).ToArray();
         var existing = new FilteredElementCollector(project).OfClass(typeof(FamilySymbol))
             .OfCategory(BuiltInCategory.OST_StructuralColumns).Cast<FamilySymbol>()
-            .FirstOrDefault(symbol => symbol.FamilyName == name && symbol.Name == name);
+            .FirstOrDefault(symbol => IsNamedVariant(symbol, name) && HasFixedSection(symbol, round, width, depth));
         if (existing != null)
             return existing;
 
@@ -39,7 +51,8 @@ internal static class ColumnFamily
                 ?? throw new InvalidOperationException("无法新建 TuMo 柱族。");
             try
             {
-                BuildExtrusion(family, familyName, round, width, depth, materialName);
+                // The type name keeps the full section key even if the family name needs a suffix.
+                BuildExtrusion(family, name, round, width, depth, materialName);
                 family.SaveAs(filename);
             }
             finally
@@ -49,8 +62,12 @@ internal static class ColumnFamily
             if (!project.LoadFamily(filename, out var loaded))
                 throw new InvalidOperationException($"不能载入柱族 {familyName}。");
 
-            log.Write($"自动生成并载入柱族 {familyName}。");
-            return (FamilySymbol)project.GetElement(loaded.GetFamilySymbolIds().Single());
+            var symbol = (FamilySymbol)project.GetElement(loaded.GetFamilySymbolIds().Single());
+            if (!HasFixedSection(symbol, round, width, depth))
+                throw new InvalidOperationException($"柱族 {familyName} 的类型尺寸与实体截面不一致。");
+
+            log.Write($"自动生成并载入柱族 {familyName}，类型尺寸已核对。");
+            return symbol;
         }
         finally
         {
@@ -73,10 +90,17 @@ internal static class ColumnFamily
         var elevationView = elevations.First();
         using var transaction = new Transaction(family, "TuMo 创建标准柱");
         transaction.Start();
-        if (family.FamilyManager.CurrentType == null)
-            family.FamilyManager.NewType(name);
+        var manager = family.FamilyManager;
+        if (manager.CurrentType == null)
+            manager.NewType(name);
         else
-            family.FamilyManager.RenameCurrentType(name);
+            manager.RenameCurrentType(name);
+
+        // The extrusion has a fixed profile. Its exposed type dimensions must have fixed values too.
+        SetDimension(manager, Width, width, required: !round);
+        SetDimension(manager, Depth, depth, required: !round);
+        if (round)
+            SetDimension(manager, Diameter, width, required: true);
 
         var sketchPlane = SketchPlane.Create(family, bottom.Id);
         var profile = Profile(round, width, depth, bottom.ProjectElevation);
@@ -101,6 +125,55 @@ internal static class ColumnFamily
         if (transaction.Commit() != TransactionStatus.Committed)
             throw new InvalidOperationException("Revit 无法保存柱族几何。");
     }
+
+    internal static bool IsGenerated(FamilySymbol symbol) =>
+        (symbol.Name.StartsWith("TuMo-矩形柱-", StringComparison.Ordinal) ||
+         symbol.Name.StartsWith("TuMo-圆柱-D", StringComparison.Ordinal)) &&
+        IsNamedVariant(symbol, symbol.Name);
+
+    private static bool IsNamedVariant(FamilySymbol symbol, string name)
+    {
+        if (symbol.Name != name)
+            return false;
+        if (symbol.FamilyName == name)
+            return true;
+        return symbol.FamilyName.StartsWith(name + "-", StringComparison.Ordinal) &&
+               int.TryParse(symbol.FamilyName.Substring(name.Length + 1), out var suffix) && suffix >= 2;
+    }
+
+    private static bool HasFixedSection(FamilySymbol symbol, bool round, double width, double depth) =>
+        round ? HasFixedDimension(symbol, Diameter, width) :
+            HasFixedDimension(symbol, Width, width) && HasFixedDimension(symbol, Depth, depth);
+
+    private static bool HasFixedDimension(FamilySymbol symbol,
+        (string Name, BuiltInParameter[] Keys, string[] Aliases) dimension, double size)
+    {
+        return symbol.Parameters.Cast<Parameter>().Any(parameter =>
+            parameter.StorageType == StorageType.Double && parameter.IsReadOnly &&
+            IsDimension(parameter.Definition, dimension) &&
+            Math.Abs(parameter.AsDouble() - size) < RevitApi.Feet(0.05));
+    }
+
+    private static void SetDimension(FamilyManager manager,
+        (string Name, BuiltInParameter[] Keys, string[] Aliases) dimension, double size, bool required)
+    {
+        var parameters = manager.GetParameters().Where(parameter =>
+            parameter.StorageType == StorageType.Double && !parameter.IsInstance &&
+            parameter.CanAssignFormula && IsDimension(parameter.Definition, dimension)).ToList();
+        if (parameters.Count == 0 && required)
+            parameters.Add(RevitApi.FamilyLength(manager, dimension.Name));
+
+        // Integer micrometres keep the formula independent of the host's decimal separator.
+        var micrometres = Math.Round(size / RevitApi.Feet(0.001)).ToString("0", CultureInfo.InvariantCulture);
+        foreach (var parameter in parameters)
+            manager.SetFormula(parameter, $"{micrometres} mm / 1000");
+    }
+
+    private static bool IsDimension(Definition definition,
+        (string Name, BuiltInParameter[] Keys, string[] Aliases) dimension) =>
+        definition.Name == dimension.Name ||
+        definition is InternalDefinition builtIn && dimension.Keys.Contains(builtIn.BuiltInParameter) ||
+        dimension.Aliases.Contains(definition.Name, StringComparer.OrdinalIgnoreCase);
 
     private static CurveArrArray Profile(bool round, double width, double depth, double elevation)
     {
