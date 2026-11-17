@@ -112,7 +112,16 @@ internal static class ModelBuilder
                 level.Name = data.Name;
                 existing.Add(level);
                 if (planType != null)
-                    ViewPlan.Create(document, planType.Id, level.Id);
+                {
+                    var plan = ViewPlan.Create(document, planType.Id, level.Id);
+                    var discipline = plan.get_Parameter(BuiltInParameter.VIEW_DISCIPLINE);
+                    if (discipline is { IsReadOnly: false } && plan.Discipline == ViewDiscipline.Structural &&
+                        (document.GetElement(plan.ViewTemplateId) is not View template ||
+                         template.GetNonControlledTemplateParameterIds().Contains(discipline.Id)))
+                    {
+                        plan.Discipline = ViewDiscipline.Coordination;
+                    }
+                }
             }
             ids.Set(level, data.Id);
             levels.Add(data.Id, level);
