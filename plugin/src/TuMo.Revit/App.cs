@@ -26,7 +26,12 @@ public sealed class App : IExternalApplication
         panel.AddItem(new PushButtonData("TuMo.Generate", "从 DXF\n生成模型",
             Assembly.GetExecutingAssembly().Location, typeof(GenerateCommand).FullName!)
         {
-            ToolTip = "识别一张 DXF 平面图并生成标高、轴网、柱和墙。"
+            ToolTip = "识别一张 DXF 平面图并生成一个楼层的构件。"
+        });
+        panel.AddItem(new PushButtonData("TuMo.GenerateStandardFloors", "从 DXF\n生成标准层",
+            Assembly.GetExecutingAssembly().Location, typeof(GenerateStandardFloorsCommand).FullName!)
+        {
+            ToolTip = "按 DXF 图名标明的楼层范围及楼层表生成多个标准层。"
         });
         panel.AddItem(new PushButtonData("TuMo.Review", "从 DXF\n审图",
             Assembly.GetExecutingAssembly().Location, typeof(ReviewCommand).FullName!)

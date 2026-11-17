@@ -20,6 +20,7 @@ from tumo_engine.recognize.opening import recognize_openings
 from tumo_engine.recognize.ramp import identify_ramps
 from tumo_engine.recognize.room import identify_rooms
 from tumo_engine.recognize.slab import recognize_slabs
+from tumo_engine.recognize.standard_floors import expand_standard_floors, standard_floor_span
 from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_areas
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
@@ -271,7 +272,8 @@ def _plan_levels(items, title, discipline, rules):
         return levels, rows, warnings + legacy_warnings
 
     numbered = {row.number: row for row in rows if row.number is not None}
-    floor = floor_from_title(title)
+    span, _ = standard_floor_span(title)
+    floor = span[0] if span else floor_from_title(title)
     if floor is None:
         floor = min((number for number in numbered if number > 0), default=1)
     top_floor = 1 if floor == -1 else floor + 1
@@ -307,7 +309,7 @@ def _plan_levels(items, title, discipline, rules):
     return [base, top], rows, warnings
 
 
-def run(input_path: Path, bounds: Bounds | None = None) -> dict:
+def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floors: bool = False) -> dict:
     path = Path(input_path).resolve()
     drawing = input_drawing(path)
     root = path if path.is_dir() else path.parent
@@ -452,6 +454,15 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
         model["elements"].extend(ramps)
         for entry in ramp_warnings:
             issue(entry["message"], at=entry["at"])
+    if repeat_standard_floors:
+        expanded, repeat_warnings = expand_standard_floors(model, sheet_info.title, level_rows)
+        if expanded is model:
+            message = "\n".join(repeat_warnings) or "图名缺少明确的标准层范围。请选择含楼层范围和楼层表的平面图。"
+            raise ValueError(message)
+        model = expanded
+        for message in repeat_warnings:
+            issue(message)
+    if subject == "arch":
         _apply_window_sills(model, drawing, root, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
         if count == 0 and (category != "墙" or subject != "struct"):

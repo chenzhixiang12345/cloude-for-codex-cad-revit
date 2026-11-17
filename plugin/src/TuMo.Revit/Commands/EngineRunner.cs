@@ -13,7 +13,7 @@ internal static class EngineRunner
 {
     private const int TimeoutMilliseconds = 5 * 60 * 1000;
 
-    public static string Run(string input, RunLog log)
+    public static string Run(string input, RunLog log, bool repeatStandardFloors = false)
     {
         var assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
         var executable = Path.Combine(assemblyDirectory, "tumo-engine.exe");
@@ -36,7 +36,7 @@ internal static class EngineRunner
         var startInfo = new ProcessStartInfo
         {
             FileName = executable,
-            Arguments = "run job.json",
+            Arguments = repeatStandardFloors ? "run job.json --repeat-standard-floors" : "run job.json",
             WorkingDirectory = output,
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -57,9 +57,14 @@ internal static class EngineRunner
 
         log.Write($"识别引擎退出码 {process.ExitCode}");
         log.Write(stdout.GetAwaiter().GetResult());
-        log.Write(stderr.GetAwaiter().GetResult());
+        var errors = stderr.GetAwaiter().GetResult();
+        log.Write(errors);
         if (process.ExitCode != 0)
-            throw new InvalidOperationException("识别引擎失败。请查看日志。");
+        {
+            var marker = errors.LastIndexOf("图模一致：", StringComparison.Ordinal);
+            var summary = marker >= 0 ? errors.Substring(marker).Trim() : "识别引擎失败。请查看日志。";
+            throw new InvalidOperationException(summary);
+        }
 
         if (!File.Exists(Path.Combine(output, "model.json")))
             throw new FileNotFoundException("识别引擎没有输出 model.json。");

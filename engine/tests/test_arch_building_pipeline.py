@@ -71,3 +71,26 @@ def test_plan_prefers_inline_level_table_and_current_row_height(tmp_path):
     assert [item["elevation_arch"] for item in model["levels"]] == [7000, 10200]
     assert model["levels"][1]["source"] == "楼层表层高"
     assert not any("默认" in issue["message"] for issue in model["issues"])
+
+
+def test_standard_floor_mode_uses_range_and_keeps_single_floor_as_default(tmp_path):
+    drawing = tmp_path / "三至四层平面图.dxf"
+    doc = ezdxf.new(units=4)
+    space = doc.modelspace()
+    for x, y, caption in ((0, 0, "层数"), (1500, 0, "标高H(m)"), (3000, 0, "层高(mm)"),
+                          (0, -500, "3F"), (1500, -500, "7.800"), (3000, -500, "3000"),
+                          (0, -1000, "4F"), (1500, -1000, "10.800"), (3000, -1000, "3000"),
+                          (0, -1500, "5F"), (1500, -1500, "13.800")):
+        space.add_text(caption, dxfattribs={"insert": (x, y), "layer": "AD-层高表"})
+    for y in (1900, 2100):
+        space.add_line((0, y), (4000, y), dxfattribs={"layer": "WALL"})
+    doc.saveas(drawing)
+
+    single = run(drawing)
+    expanded = run(drawing, repeat_standard_floors=True)
+
+    TumoModel.model_validate(expanded)
+    assert [level["id"] for level in single["levels"]] == ["L3", "L4"]
+    assert [level["id"] for level in expanded["levels"]] == ["L3", "L4", "L5"]
+    assert [wall["base_level"] for wall in expanded["elements"]] == ["L3", "L4"]
+    assert expanded["elements"][0]["id"] == single["elements"][0]["id"]
