@@ -71,6 +71,15 @@ def _schedule(args):
     print(args.output)
 
 
+def _elevations(args):
+    from tumo_engine.recognize.elevation import read_elevation_drawing
+
+    annotations, issues = read_elevation_drawing(args.drawing, default_elevation_unit=args.unit)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(args.output, {"units": "mm", "annotations": annotations, "issues": issues})
+    print(args.output)
+
+
 def _run(args):
     from tumo_engine.export.model import TumoModel
     from tumo_engine.pipeline import run
@@ -140,6 +149,11 @@ def main(argv=None):
     schedule.add_argument("drawing", type=Path)
     schedule.add_argument("-o", "--output", type=Path, default=Path("out/opening-schedule.json"))
     schedule.set_defaults(handler=_schedule)
+    elevations = commands.add_parser("elevations", help="读取立剖面标高及窗台，保留 CAD 来源。")
+    elevations.add_argument("drawing", type=Path)
+    elevations.add_argument("-o", "--output", type=Path, default=Path("out/elevations.json"))
+    elevations.add_argument("--unit", choices=("m", "cm", "mm"), help="指定标高中省略的单位。")
+    elevations.set_defaults(handler=_elevations)
     run = commands.add_parser("run", help="识别 DXF、目录或 JSON 任务。")
     run.add_argument("input", type=Path)
     run.add_argument("-o", "--output", type=Path)

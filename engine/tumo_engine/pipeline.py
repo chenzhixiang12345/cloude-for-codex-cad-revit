@@ -12,6 +12,7 @@ from shapely.geometry import LineString, MultiPoint
 from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import Bounds, bind_xrefs, primitives, unit_factor
 from tumo_engine.recognize.column import recognize_columns
+from tumo_engine.recognize.elevation import read_elevation_drawing
 from tumo_engine.recognize.geometry import rounded
 from tumo_engine.recognize.grid import recognize_grids
 from tumo_engine.recognize.level import floor_from_title, recognize_levels
@@ -27,6 +28,7 @@ from tumo_engine.tables.levels import read_level_schedule
 
 
 _OPENING_TABLE = re.compile(r"门窗(?:表|详图|大样)|(?:门|窗)表|(?:door|window)[-_ ]*schedule", re.I)
+_ELEVATION_DRAWING = re.compile(r"立剖面|立面图|剖面图|(?:^|[-_ ])(?:elevation|section)(?:$|[-_ ])", re.I)
 _OPENING_PREFIX = {"door": "D", "window": "WIN", "wall_opening": "WO"}
 
 
@@ -169,10 +171,57 @@ def _add_openings(model, items, sheet_items, drawing, root, rules, issue):
         })
         candidate["evidence"].extend(evidence[mark])
         model["elements"].append(candidate)
-        if category == "window" and "sill_height" not in candidate:
-            issue(f"{mark} 缺少窗台高度。请对照立面或剖面。", candidate["id"], at)
-        else:
+        if category != "window":
             issue(f"请核对 {mark} 的尺寸和宿主墙。", candidate["id"], at)
+
+
+def _apply_window_sills(model, drawing, root, issue):
+    windows = defaultdict(list)
+    for element in model["elements"]:
+        if element["category"] == "window":
+            windows[(element["base_level"], element["type"]["mark"])].append(element)
+    if not windows:
+        return
+
+    sills = defaultdict(list)
+    conflicts = set()
+    for path in sorted(drawing.parent.iterdir()):
+        if (path == drawing or path.suffix.lower() != ".dxf" or not path.is_file()
+                or not _ELEVATION_DRAWING.search(path.stem) or not path.resolve().is_relative_to(root)):
+            continue
+        try:
+            annotations, warnings = read_elevation_drawing(path, root)
+        except ValueError as error:
+            issue(str(error))
+            continue
+        for warning in warnings:
+            issue(f"{path.name}：{warning['message']}")
+            if warning["code"] == "conflicting_sill":
+                conflicts.add((warning["level"], warning["mark"]))
+        for annotation in annotations:
+            if annotation["kind"] == "sill_height":
+                sills[(annotation["level"], annotation["mark"])].append(annotation)
+
+    for key, elements in windows.items():
+        _, mark = key
+        notes = sills.get(key, ())
+        values = {note["value_mm"] for note in notes}
+        for window in elements:
+            matched = window.get("sill_height")
+            at = window["geometry"]["at"]
+            if key in conflicts or len(values) > 1 or (matched is not None and values and matched not in values):
+                issue(f"{mark} 的窗台高度有冲突。请核对门窗表和立剖面。", window["id"], at)
+            elif notes and len(elements) == 1:
+                window["sill_height"], = values
+                for entry in notes:
+                    source = entry["source"]
+                    window["evidence"].append(f"sill_height:{source['file']}:" + ",".join(source["handles"]))
+            elif notes:
+                issue(f"{mark} 同层有多个窗位。窗台标注不能唯一定位。", window["id"], at)
+            if "sill_height" not in window:
+                issue(f"{mark} 缺少窗台高度。请对照立面或剖面。", window["id"], at)
+            else:
+                issue(f"请核对 {mark} 的尺寸和宿主墙。", window["id"], at)
 
 
 def _add_rooms(model, items, rules, issue):
@@ -403,6 +452,7 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
         model["elements"].extend(ramps)
         for entry in ramp_warnings:
             issue(entry["message"], at=entry["at"])
+        _apply_window_sills(model, drawing, root, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
         if count == 0 and (category != "墙" or subject != "struct"):
             issue(f"当前图纸范围内没有识别到{category}。")

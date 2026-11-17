@@ -108,3 +108,26 @@ def test_run_reconnects_confirmed_split_wall_for_native_opening(tmp_path):
     assert "wall_pair" not in door
     assert door["host"] == wall["id"]
     assert door["geometry"]["at"] == [1650, 0]
+
+
+def test_plan_uses_uniquely_located_window_sill_and_preserves_section_source(tmp_path):
+    drawing = tmp_path / "三层平面图.dxf"
+    doc = ezdxf.new(units=4)
+    space = doc.modelspace()
+    for y in (-100, 100):
+        space.add_line((0, y), (4000, y), dxfattribs={"layer": "WALL"})
+    space.add_line((800, 0), (1700, 0), dxfattribs={"layer": "A-WINDOW"})
+    space.add_text("C0914", dxfattribs={"insert": (1250, 250)})
+    _table(space, "C0914", 900)
+    doc.saveas(drawing)
+    section = ezdxf.new(units=4)
+    note = section.modelspace().add_text("3F C0914 窗台高 750 mm", dxfattribs={"insert": (0, 0)})
+    section.saveas(tmp_path / "剖面图.dxf")
+
+    model = run(drawing)
+
+    TumoModel.model_validate(model)
+    [window] = [element for element in model["elements"] if element["category"] == "window"]
+    assert window["sill_height"] == 750
+    assert f"sill_height:剖面图.dxf:{note.dxf.handle}" in window["evidence"]
+    assert not any("缺少窗台高度" in issue["message"] for issue in model["issues"])
