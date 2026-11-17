@@ -91,3 +91,15 @@ opening:
     axis_tolerance: 8
     thickness_tolerance: 1
     direction_tolerance_deg: 1
+opening_detail:
+  diagram_layers: '^AE[-_]ELEV[-_]4$'
+  caption_layers: '^AD[-_]NOTE[-_]CRCY$'
+  floor_layers: '^AD[-_]LEVL[-_]HIGH$'
+  dimension_layers: '^(?:AD[-_])?DIMS?(?:[-_]|$)'
+  marks:
+    window: '(?:BYC|TC|LC|GC|C)[-_]?\d[A-Z0-9*\-/]*'
+    door: '(?:GSM|TLM|WM|FM[甲乙丙]?|M)[-_]?\d[A-Z0-9*\-/]*'
+  witness_tolerance: 2
+  caption_search: 1800
+  floor_search: 3000
+  include_hidden_witnesses: true

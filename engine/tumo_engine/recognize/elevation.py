@@ -9,6 +9,7 @@ from unicodedata import normalize
 from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import bind_xrefs, layer_key, primitives, unit_factor
 from tumo_engine.recognize.level import _id, _number
+from tumo_engine.recognize.opening_details import read_opening_details
 
 
 _LAYER = re.compile(r"(?:^|[-_])(?:LEVL[-_]HIGH|ELEVATION)(?:$|[-_])|^(?:标高|楼层标高)$")
@@ -249,10 +250,12 @@ def read_elevation_drawing(path: Path, root: Path | None = None, *, default_elev
     relative = source.relative_to(root).as_posix()
     drawing = read_dxf(source)
     warnings = bind_xrefs(drawing, source, root)
-    items, parsing_warnings = primitives(drawing, unit_factor(drawing))
+    factor = unit_factor(drawing)
+    items, parsing_warnings = primitives(drawing, factor)
     annotations, issues = recognize_elevation_annotations(
         items, relative, default_elevation_unit=default_elevation_unit,
     )
+    annotations.extend(read_opening_details(drawing, relative, factor))
     file_issues = [
         {"code": "elevation_drawing_warning", "message": message,
          "source": _source(relative, ()), "at": None}

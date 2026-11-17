@@ -142,6 +142,50 @@ def test_pipeline_uses_measured_frame_width_for_a_scheduled_door(tmp_path, corne
         assert wall_face.dxf.handle in wall["source"]["handles"]
 
 
+@pytest.mark.parametrize("measured_frame,scheduled", [(True, False), (False, False), (True, True)])
+def test_plan_uses_door_type_dimensions_only_with_verified_frame(tmp_path, monkeypatch, measured_frame, scheduled):
+    from tumo_engine.pipeline import run
+    from tumo_engine.recognize import elevation
+
+    doc = ezdxf.new(units=4)
+    drawing = doc.modelspace()
+    if measured_frame:
+        _frame_parts(doc.blocks.new("DOOR"), 790)
+        drawing.add_blockref("DOOR", (1300, 0))
+    else:
+        drawing.add_line((1270, 30), (2120, 30), dxfattribs={"layer": "A-DOOR"})
+    drawing.add_text("M0824A", dxfattribs={"insert": (1695, 350), "layer": "AD-NUMB"})
+    if scheduled:
+        drawing.add_text("WM0824A", dxfattribs={"insert": (1695, 350), "layer": "AD-NUMB"})
+        for x, y, text in ((0, 4500, "门窗编号"), (1500, 4500, "洞口尺寸"),
+                           (0, 4000, "WM0824A"), (1500, 4000, "850×2400")):
+            drawing.add_text(text, dxfattribs={"insert": (x, y)})
+    for y in (-70, 130):
+        drawing.add_line((0, y), (4000, y), dxfattribs={"layer": "WALL"})
+    path = tmp_path / "三层建筑平面图.dxf"
+    doc.saveas(path)
+    ezdxf.new(units=4).saveas(tmp_path / "剖面图.dxf")
+    annotation = {"kind": "opening_detail", "mark": "M0824A", "category": "door", "width_mm": 850,
+                  "height_mm": 2400, "sill_height_mm": None, "source": {"file": "剖面图.dxf", "handles": ["D1"]}}
+    monkeypatch.setattr(elevation, "recognize_elevation_annotations", lambda *args, **kwargs: ([annotation], []))
+
+    model = run(path)
+
+    doors = [element for element in model["elements"] if element["category"] == "door"]
+    if scheduled:
+        [door] = doors
+        assert door["type"]["mark"] == "WM0824A"
+        assert any("候选门框与已核对门窗" in entry["message"] for entry in model["issues"])
+    elif measured_frame:
+        [door] = doors
+        assert door["type"] == {"mark": "M0824A", "width": 850, "height": 2400}
+        assert "detail:exact_mark" in door["evidence"]
+        assert "opening_detail:剖面图.dxf:D1" in door["evidence"]
+    else:
+        assert not doors
+        assert any("还需核对门框外边和宿主墙" in entry["message"] for entry in model["issues"])
+
+
 def test_pipeline_uses_configured_minimum_door_swing_radius(tmp_path, monkeypatch):
     from tumo_engine import pipeline
 

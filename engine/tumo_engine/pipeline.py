@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 import re
+from unicodedata import normalize
 
 from shapely.geometry import LineString, MultiPoint
 
@@ -24,7 +25,7 @@ from tumo_engine.recognize.standard_floors import expand_standard_floors, standa
 from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_areas
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
-from tumo_engine.tables import WallOpeningScheduleRow, read_opening_schedule
+from tumo_engine.tables import OpeningScheduleRow, WallOpeningScheduleRow, read_opening_schedule
 from tumo_engine.tables.levels import read_level_schedule
 
 
@@ -164,24 +165,96 @@ def _restore_opening_hosts(model, candidates, hosts, issue):
     return accepted
 
 
-def _add_openings(model, items, sheet_items, drawing, root, rules, issue, read_companion):
+def _detail_trace(annotation):
+    source = annotation["source"]
+    return f"opening_detail:{source['file']}:" + ",".join(source["handles"])
+
+
+def _detail_schedule(schedule, details):
+    table_sizes = defaultdict(set)
+    for row in schedule:
+        if not isinstance(row, WallOpeningScheduleRow):
+            table_sizes[row.mark].add((row.width, row.height))
+    fallback = {}
+    conflicts = set()
+    for mark, entries in details.items():
+        sizes = {(entry["category"], entry["width_mm"], entry["height_mm"]) for entry in entries}
+        if len(sizes) != 1:
+            conflicts.add(mark)
+            continue
+        (category, width, height), = sizes
+        if table_sizes[mark]:
+            if table_sizes[mark] != {(width, height)}:
+                conflicts.add(mark)
+        elif category == "door":
+            handles = tuple(sorted({handle for entry in entries for handle in entry["source"]["handles"]}))
+            fallback[mark] = OpeningScheduleRow(mark, width, height, None, handles)
+    return fallback, conflicts
+
+
+def _opening_host_ids(candidate):
+    return set(candidate["wall_pair"]) if "wall_pair" in candidate else {candidate["host"]}
+
+
+def _detail_openings(candidates, from_tables, issue):
+    table_openings = defaultdict(list)
+    table_edits = set()
+    for candidate in from_tables:
+        references = _opening_host_ids(candidate)
+        for identifier in references:
+            table_openings[identifier].append(candidate)
+        if "wall_pair" in candidate or "wall_extension" in candidate:
+            table_edits.update(references)
+    for candidate in candidates:
+        at = candidate["geometry"]["at"]
+        mark = candidate["type"]["mark"]
+        if candidate["category"] != "door" or "door:swing_and_jambs" not in candidate["evidence"]:
+            issue(f"{mark} 已量得图型尺寸。还需核对门框外边和宿主墙。", at=at)
+            continue
+        references = _opening_host_ids(candidate)
+        edits_wall = "wall_pair" in candidate or "wall_extension" in candidate
+        same_host = [entry for identifier in references for entry in table_openings[identifier]]
+        overlaps = any(math.dist(at, entry["geometry"]["at"]) <
+                       (candidate["type"]["width"] + entry["type"]["width"]) / 2 for entry in same_host)
+        if references & table_edits or (edits_wall and same_host) or overlaps:
+            issue(f"{mark} 的候选门框与已核对门窗共用宿主或相交。请核对原图。", at=at)
+            continue
+        candidate["evidence"][0] = "detail:exact_mark"
+        yield candidate
+
+
+def _add_openings(model, items, sheet_items, drawing, root, rules, issue, read_companion, details):
     schedule, evidence, inline_handles = _opening_schedules(drawing, root, sheet_items, issue, read_companion)
-    if not schedule:
-        return
-    hosts = {wall["id"]: wall for wall in model["elements"] if wall["category"] == "wall"}
-    plan_items = (
+    fallback, conflicts = _detail_schedule(schedule, details)
+    plan_items = [
         item for item in items
         if item.kind != "text" or not item.handles or not set(item.handles) <= inline_handles
-    )
+    ]
+    for item in plan_items:
+        if item.kind == "text" and (mark := normalize("NFKC", item.text).strip().upper()) in conflicts:
+            trace = "、".join([*evidence[(mark, False)], *(_detail_trace(entry) for entry in details[mark])])
+            issue(f"{mark} 的门窗表和图型尺寸冲突，或图型尺寸有冲突。请核对 CAD 来源 {trace}。",
+                  at=rounded(item.points[0]))
+    schedule = [row for row in schedule if isinstance(row, WallOpeningScheduleRow) or row.mark not in conflicts]
+    if not (schedule or fallback):
+        return
+    hosts = {wall["id"]: wall for wall in model["elements"] if wall["category"] == "wall"}
     opening_rules = rules["opening"]
-    candidates, issues = recognize_openings(plan_items, hosts.values(), schedule, wall_pair_rules=opening_rules["wall_pair"],
-                                           window_number_rules=opening_rules["window_number"],
-                                           door_frame_rules=opening_rules["door_frame"], corner_rules=rules)
-    for entry in issues:
-        issue(entry["message"], at=entry["at"])
+    def match(rows):
+        candidates, issues = recognize_openings(
+            plan_items, hosts.values(), rows, wall_pair_rules=opening_rules["wall_pair"],
+            window_number_rules=opening_rules["window_number"], door_frame_rules=opening_rules["door_frame"],
+            corner_rules=rules,
+        )
+        for entry in issues:
+            issue(entry["message"], at=entry["at"])
+        return candidates
+
+    from_tables = match(schedule)
+    from_details = list(_detail_openings(match(fallback.values()), from_tables, issue))
 
     sheet = model["sheets"][0]
-    for candidate in _restore_opening_hosts(model, candidates, hosts, issue):
+    for candidate in _restore_opening_hosts(model, [*from_tables, *from_details], hosts, issue):
         at = candidate["geometry"]["at"]
         host = hosts[candidate["host"]]
         mark = candidate["type"]["mark"]
@@ -193,19 +266,15 @@ def _add_openings(model, items, sheet_items, drawing, root, rules, issue, read_c
             "source": {"sheet": sheet["id"], "handles": candidate.pop("handles")},
         })
         candidate["evidence"].extend(evidence[(mark, category == "wall_opening")])
+        candidate["evidence"].extend(dict.fromkeys(
+            _detail_trace(entry) for entry in details.get(mark, ()) if entry["category"] == category))
         model["elements"].append(candidate)
         if category != "window":
             issue(f"请核对 {mark} 的尺寸和宿主墙。", candidate["id"], at)
 
 
-def _apply_window_sills(model, drawing, root, issue, read_elevations):
-    windows = defaultdict(list)
-    for element in model["elements"]:
-        if element["category"] == "window":
-            windows[(element["base_level"], element["type"]["mark"])].append(element)
-    if not windows:
-        return
-
+def _opening_annotations(drawing, root, issue, read_elevations):
+    details = defaultdict(list)
     sills = defaultdict(list)
     conflicts = set()
     for path in sorted(drawing.parent.iterdir()):
@@ -224,23 +293,44 @@ def _apply_window_sills(model, drawing, root, issue, read_elevations):
         for annotation in annotations:
             if annotation["kind"] == "sill_height":
                 sills[(annotation["level"], annotation["mark"])].append(annotation)
+            elif annotation["kind"] == "opening_detail":
+                details[annotation["mark"]].append(annotation)
+    return details, sills, conflicts
+
+
+def _apply_window_sills(model, details, sills, conflicts, issue):
+    windows = defaultdict(list)
+    for element in model["elements"]:
+        if element["category"] == "window":
+            windows[(element["base_level"], element["type"]["mark"])].append(element)
 
     for key, elements in windows.items():
         _, mark = key
         notes = sills.get(key, ())
-        values = {note["value_mm"] for note in notes}
+        local_values = {note["value_mm"] for note in notes}
         for window in elements:
+            size = window["type"]
+            type_notes = [entry for entry in details.get(mark, ())
+                          if entry["category"] == "window" and entry["width_mm"] == size["width"]
+                          and entry["height_mm"] == size["height"] and entry.get("sill_height_mm") is not None]
+            type_values = {entry["sill_height_mm"] for entry in type_notes if not entry["source"].get("hidden_sill_handles")}
+            values = local_values | type_values
             matched = window.get("sill_height")
             at = window["geometry"]["at"]
             if key in conflicts or len(values) > 1 or (matched is not None and values and matched not in values):
                 issue(f"{mark} 的窗台高度有冲突。请核对门窗表和立剖面。", window["id"], at)
-            elif notes and len(elements) == 1:
+            elif type_values or (notes and len(elements) == 1):
                 window["sill_height"], = values
-                for entry in notes:
-                    source = entry["source"]
-                    window["evidence"].append(f"sill_height:{source['file']}:" + ",".join(source["handles"]))
+                if len(elements) == 1:
+                    for entry in notes:
+                        source = entry["source"]
+                        window["evidence"].append(f"sill_height:{source['file']}:" + ",".join(source["handles"]))
             elif notes:
                 issue(f"{mark} 同层有多个窗位。窗台标注不能唯一定位。", window["id"], at)
+            hidden = sorted({entry["sill_height_mm"] for entry in type_notes if entry["source"].get("hidden_sill_handles")})
+            if hidden and ("sill_height" not in window or window["sill_height"] not in hidden):
+                candidates = "、".join(f"{value:g}" for value in hidden)
+                issue(f"{mark} 图型的隐藏标注提示窗台高 {candidates} 毫米。请核对可见图纸。", window["id"], at)
             if "sill_height" not in window:
                 issue(f"{mark} 缺少窗台高度。请对照立面或剖面。", window["id"], at)
             else:
@@ -477,7 +567,8 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
                 for identifier in sorted({column["id"] for column in joined if "id" in column})
             )
     if subject == "arch":
-        _add_openings(model, items, level_items, drawing, root, rules, issue, read_companion)
+        details, sills, sill_conflicts = _opening_annotations(drawing, root, issue, read_elevations)
+        _add_openings(model, items, level_items, drawing, root, rules, issue, read_companion, details)
         _add_rooms(model, items, rules, issue)
         _add_slabs(model, items, rules, issue)
         ramps, ramp_warnings = identify_ramps(items, sheet_id=sheet_id, base_level=levels[0]["id"],
@@ -494,7 +585,7 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
         for message in repeat_warnings:
             issue(message)
     if subject == "arch":
-        _apply_window_sills(model, drawing, root, issue, read_elevations)
+        _apply_window_sills(model, details, sills, sill_conflicts, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
         if count == 0 and (category != "墙" or subject != "struct"):
             issue(f"当前图纸范围内没有识别到{category}。")

@@ -4,7 +4,9 @@ import ezdxf
 import pytest
 
 from tumo_engine.export.model import TumoModel
+from tumo_engine import pipeline
 from tumo_engine.pipeline import run
+from tumo_engine.recognize import elevation
 
 
 def _table(layout, mark, width, *, offset=0):
@@ -131,6 +133,41 @@ def test_plan_uses_uniquely_located_window_sill_and_preserves_section_source(tmp
     assert window["sill_height"] == 750
     assert f"sill_height:剖面图.dxf:{note.dxf.handle}" in window["evidence"]
     assert not any("缺少窗台高度" in issue["message"] for issue in model["issues"])
+
+
+@pytest.mark.parametrize("detail_width,hidden", [(900, False), (950, False), (900, True)])
+def test_plan_applies_agreeing_window_detail_to_repeated_instances(tmp_path, monkeypatch, detail_width, hidden):
+    drawing = tmp_path / "三层平面图.dxf"
+    doc = ezdxf.new(units=4)
+    space = doc.modelspace()
+    for y in (-100, 100):
+        space.add_line((0, y), (4500, y), dxfattribs={"layer": "WALL"})
+    for x in (1250, 2850):
+        space.add_line((x - 450, 0), (x + 450, 0), dxfattribs={"layer": "A-WINDOW"})
+        space.add_text("C0914", dxfattribs={"insert": (x, 250), "layer": "AD-NUMB"})
+    _table(space, "C0914", 900)
+    doc.saveas(drawing)
+    ezdxf.new(units=4).saveas(tmp_path / "剖面图.dxf")
+    annotation = {"kind": "opening_detail", "mark": "C0914", "category": "window", "width_mm": detail_width,
+                  "height_mm": 2100, "sill_height_mm": 500, "source": {"file": "剖面图.dxf", "handles": ["D1"]}}
+    if hidden:
+        annotation["source"]["hidden_sill_handles"] = ["D1"]
+    monkeypatch.setattr(elevation, "recognize_elevation_annotations", lambda *args, **kwargs: ([annotation], []))
+
+    model = pipeline.run(drawing)
+
+    TumoModel.model_validate(model)
+    windows = [element for element in model["elements"] if element["category"] == "window"]
+    if detail_width != 900:
+        assert not windows
+        assert sum("门窗表和图型尺寸冲突" in entry["message"] for entry in model["issues"]) == 2
+    elif hidden:
+        assert len(windows) == 2
+        assert all("sill_height" not in window for window in windows)
+        assert sum("隐藏标注提示窗台高 500" in entry["message"] for entry in model["issues"]) == 2
+    else:
+        assert [window["sill_height"] for window in windows] == [500, 500]
+        assert all("opening_detail:剖面图.dxf:D1" in window["evidence"] for window in windows)
 
 
 def test_plan_reads_wall_opening_schedule_and_binds_its_bottom_height(tmp_path):
