@@ -1,3 +1,4 @@
+import pytest
 from shapely.geometry import Point, Polygon
 
 from tumo_engine.export.model import Element
@@ -18,6 +19,10 @@ def wall(identifier, start, end, *, sheet="A101", level="L3", width=200):
 
 def label(name, at, handle):
     return Primitive("text", "AD-NAME-ROOM", (at,), (handle,), (), text=name)
+
+
+def area(value, at=(1500, 1160), *, layer="AD-AREA-USNO"):
+    return Primitive("text", layer, (at,), ("AREA",), (), text=value)
 
 
 def rectangle():
@@ -181,3 +186,49 @@ def test_does_not_close_rooms_with_walls_from_other_levels_or_sheets():
     ]
 
     assert in_sheet(items, walls)[0] == []
+
+
+@pytest.mark.parametrize("walls", [[], split_wall_room()], ids=["no-walls", "open-boundary"])
+@pytest.mark.parametrize("value", [r"14.00m\U+00B2", "14.00 m²", "14.00㎡"])
+def test_unique_positive_area_marks_unconfirmed_room_at_original_name(walls, value):
+    items = iter([label("卧室", (1500, 1500), "NAME"), area(value)])
+
+    rooms, issues = in_sheet(items, walls)
+
+    assert not rooms
+    assert len(issues) == 1
+    [issue] = issues
+    assert issue["code"] == "room_area_unconfirmed"
+    assert issue["at"] == [1500, 1500]
+    assert "卧室" in issue["message"]
+    assert "14.00 平方米" in issue["message"]
+
+
+def test_area_marker_is_suppressed_if_the_name_is_in_a_confirmed_room():
+    items = [label("卧室", (1500, 1500), "NAME")]
+
+    assert in_sheet([*items, area("99.00m²")], rectangle()) == in_sheet(items, rectangle())
+
+
+@pytest.mark.parametrize("other", [
+    label("厨房", (1500, 1000), "SECOND-NAME"),
+    area("16.00m²", at=(1700, 1500)),
+])
+def test_area_marker_requires_a_unique_neighbour_in_both_directions(other):
+    items = [label("卧室", (1500, 1500), "NAME"), area("14.00m²"), other]
+
+    assert in_sheet(items, []) == ([], [])
+
+
+@pytest.mark.parametrize("annotation", [
+    area("14.00m²", layer="AD-AREA-USNO-NOTES"),
+    area("14.00"),
+    area("14.00m"),
+    area("0.00m²"),
+    area("-14.00m²"),
+    area("14.00m²", at=(1500, 1000)),
+])
+def test_area_marker_requires_designated_layer_positive_square_metres_and_proximity(annotation):
+    items = [label("卧室", (1500, 1500), "NAME"), annotation]
+
+    assert in_sheet(items, []) == ([], [])

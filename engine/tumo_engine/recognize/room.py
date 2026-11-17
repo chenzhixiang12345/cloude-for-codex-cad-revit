@@ -1,23 +1,26 @@
 """Recognize labeled rooms bounded by wall centerlines."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from hashlib import blake2s
 import json
+from math import isfinite
 import re
 from unicodedata import normalize
 
 from shapely import get_parts, union_all
-from shapely.geometry import Point
+from shapely.geometry import Point, Polygon
 from shapely.ops import polygonize
 
 from tumo_engine.index import SpatialIndex
 from tumo_engine.preprocess import Primitive, layer_key
 from tumo_engine.recognize.geometry import rounded, segments
 from tumo_engine.recognize.room_boundaries import local_issue, opening_bridges, wall_boundaries, wall_junctions
+from tumo_engine.rules import defaults
 
 
 ROOM_LAYERS = r"(?:^|[-_])(?:ROOM|房间名称|房间|房名)(?:$|[-_])"
 MEASUREMENT = re.compile(r"[+-]?\d+(?:[.,]\d+)?\s*(?:mm|cm|m[23]?)?", re.IGNORECASE)
+ROOM_AREA = re.compile(r"(\d+(?:\.\d+)?)\s*m(?:2|\\U\+00B2)", re.IGNORECASE)
 
 
 def _room_label(item: Primitive):
@@ -36,6 +39,43 @@ def _labels(items, room_layers):
         if item.kind == "text" and item.points and label_layer.search(layer_key(item.layer)):
             if name := _room_label(item):
                 yield Point(item.points[0]), name, item.handles
+
+
+def _area_labels(items, area_layer):
+    for item in items:
+        if layer_key(item.layer) != area_layer:
+            continue
+        match = ROOM_AREA.fullmatch(normalize("NFKC", item.text).strip())
+        if match:
+            value = float(match[1])
+            if isfinite(value) and value > 0:
+                yield Point(item.points[0]), match[1]
+
+
+def _unconfirmed_room_areas(items, labels, rooms, rules):
+    areas = list(_area_labels(items, layer_key(rules["area_layer"])))
+    if not areas:
+        return []
+    distance = rules["area_pair_distance"]
+    area_index = SpatialIndex(areas, lambda area: area[0])
+    name_index = SpatialIndex(labels, lambda label: label[0])
+    confirmed = SpatialIndex((Polygon(room["geometry"]["points"]) for room in rooms), lambda polygon: polygon)
+    issues = []
+    for point, name, _ in labels:
+        matching = area_index.nearby(point, distance)
+        if len(matching) != 1:
+            continue
+        area_point, value = matching[0]
+        if len(name_index.nearby(area_point, distance)) != 1:
+            continue
+        if confirmed.nearby(point, 0):
+            continue
+        issues.append(local_issue(
+            "room_area_unconfirmed",
+            f"房间“{name}”标注面积 {value} 平方米，尚未确认围合边界。请核对墙体和门洞。",
+            point.coords[0],
+        ))
+    return issues
 
 
 def _room_seed(polygon, label, footprint_index):
@@ -149,9 +189,11 @@ def identify_rooms(
     base_level: str,
     top_level: str | None = None,
     room_layers: str = ROOM_LAYERS,
+    room_rules: Mapping | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Return schema 0.1 room elements and local issues for one selected plan."""
-    labels = list(_labels(items, room_layers))
+    texts = [item for item in items if item.kind == "text" and item.points]
+    labels = list(_labels(texts, room_layers))
     if not labels:
         return [], []
 
@@ -161,11 +203,15 @@ def identify_rooms(
         return (source is None or source == sheet_id) and (floor is None or floor == base_level)
 
     edges = list(wall_boundaries(wall for wall in walls if on_plan(wall)))
-    if not edges:
-        return [], []
-    joints, joint_issues = wall_junctions(edges)
-    bridges, opening_issues = opening_bridges(edges, (element for element in openings if on_plan(element)))
-    rooms, room_issues = _detect_rooms(labels, edges, joints + bridges)
+    rooms, boundary_issues = [], []
+    if edges:
+        joints, joint_issues = wall_junctions(edges)
+        bridges, opening_issues = opening_bridges(edges, (element for element in openings if on_plan(element)))
+        rooms, room_issues = _detect_rooms(labels, edges, joints + bridges)
+        boundary_issues = [*joint_issues, *opening_issues, *room_issues]
+    if room_rules is None:
+        room_rules = defaults()["room"]
+    area_issues = _unconfirmed_room_areas(texts, labels, rooms, room_rules)
     for room in rooms:
         payload = json.dumps([sheet_id, base_level, room["geometry"]], sort_keys=True).encode("utf-8")
         room["id"] = f"R-{blake2s(payload, digest_size=5).hexdigest().upper()}"
@@ -175,7 +221,7 @@ def identify_rooms(
             room["top_level"] = top_level
         room["source"] = {"sheet": sheet_id, "handles": room.pop("handles")}
     issues = sorted(
-        [*joint_issues, *opening_issues, *room_issues],
+        [*boundary_issues, *area_issues],
         key=lambda issue: (issue["code"], issue["at"] or [], issue["message"]),
     )
     return rooms, issues

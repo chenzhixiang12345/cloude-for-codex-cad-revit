@@ -42,6 +42,9 @@ wall:
 level:
   default_height: 3000
   row_tolerance: 180
+room:
+  area_layer: AD-AREA-USNO
+  area_pair_distance: 450
 opening:
   door_frame:
     label_layers: '^(?:AD[-_]NUMB|A[-_]DOOR[-_]LABEL|DOOR[-_]TEXT)$'

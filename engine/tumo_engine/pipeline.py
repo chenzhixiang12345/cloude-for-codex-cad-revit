@@ -253,7 +253,7 @@ def _add_rooms(model, items, rules, issue):
     openings = [element for element in model["elements"] if element["category"] in _OPENING_PREFIX]
     base, top = model["levels"][:2]
     rooms, warnings = identify_rooms(items, walls, openings, sheet_id=sheet["id"],
-                                     base_level=base["id"], top_level=top["id"])
+                                     base_level=base["id"], top_level=top["id"], room_rules=rules["room"])
     model["elements"].extend(rooms)
     for entry in warnings:
         issue(entry["message"], at=entry["at"])
