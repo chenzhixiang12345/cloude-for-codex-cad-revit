@@ -21,7 +21,7 @@ def _bounds(values):
     return tuple(values)
 
 
-def read_job(path: Path, *, with_structural_slab=False):
+def read_job(path: Path, *, include_structural=False):
     job = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(job, dict):
         raise ValueError("任务文件必须包含 JSON 对象。")
@@ -33,12 +33,21 @@ def read_job(path: Path, *, with_structural_slab=False):
         (path.parent / job["output_dir"]).resolve(),
         _bounds(job.get("bounds")),
     )
-    if not with_structural_slab:
+    if not include_structural:
         return base
-    structural = job.get("structural_slab")
-    if structural is not None and (not isinstance(structural, str) or not structural.strip()):
-        raise ValueError("任务文件需要有效的 structural_slab 路径。")
-    return *base, (path.parent / structural).resolve() if structural is not None else None
+    structural = {}
+    for key in ("structural_slab", "structural_columns", "structural_beams"):
+        if (value := job.get(key)) is not None:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"任务文件需要有效的 {key} 路径。")
+            structural[key] = (path.parent / value).resolve()
+    choices = {}
+    for key in ("column_sheet", "beam_sheet"):
+        if (value := job.get(key)) is not None:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"任务文件需要有效的 {key} 图号。")
+            choices[key] = value.strip()
+    return *base, structural, choices
 
 
 def _write_json(path, value):
@@ -129,48 +138,62 @@ def _run(args):
     from tumo_engine.export.model import TumoModel
     from tumo_engine.pipeline import run
 
-    structural_slab = args.structural_slab
+    structural = {key: getattr(args, key) for key in ("structural_slab", "structural_columns", "structural_beams")
+                  if getattr(args, key) is not None}
+    choices = {key: getattr(args, key) for key in ("column_sheet", "beam_sheet") if getattr(args, key) is not None}
     if args.input.suffix.lower() == ".json" and not args.input.is_dir():
         if args.output or args.bounds:
             raise ValueError("请在任务文件中指定输出位置和范围。")
-        source, output, bounds, job_slab = read_job(args.input, with_structural_slab=True)
-        if structural_slab is not None and job_slab is not None:
-            raise ValueError("结构板图使用一个输入路径。")
-        structural_slab = structural_slab or job_slab
+        source, output, bounds, drawings, job_choices = read_job(args.input, include_structural=True)
+        if structural.keys() & drawings.keys() or choices.keys() & job_choices.keys():
+            raise ValueError("每种结构图只使用一个输入路径和图号。")
+        structural.update(drawings)
+        choices.update(job_choices)
     else:
         source = args.input.resolve()
         output = (args.output or Path("out")).resolve()
         bounds = _bounds(args.bounds)
     source_root = source if source.is_dir() else source.parent
-    if structural_slab and not args.merge_floors:
-        raise ValueError("合并结构板图时需要同时指定 --merge-floors。")
+    if structural and not args.merge_floors:
+        raise ValueError("合并结构图时需要同时指定 --merge-floors。")
+    for drawing, sheet in (("structural_columns", "column_sheet"), ("structural_beams", "beam_sheet")):
+        if (drawing in structural) != (sheet in choices):
+            raise ValueError("合并柱梁时需要同时指定结构图和对应图号。")
     if args.merge_floors:
         if bounds is not None or args.sheet is not None:
             raise ValueError("合并楼层需要读取完整 DXF，不能同时指定单张图的范围或图号。")
         from tumo_engine.building_pipeline import run_building
 
         result = run_building(source)
-        if structural_slab:
+        if structural:
             from tumo_engine.recognize.standard_floors import slab_top_floor_span
+            from tumo_engine.recognize.structural_framing_merge import merge_structural_framing
             from tumo_engine.recognize.structural_slab_merge import merge_structural_slabs
 
-            structural_file = structural_slab.resolve()
-            if not structural_file.is_file() or structural_file.suffix.lower() != ".dxf":
-                raise ValueError("请选择一份结构板 DXF。")
+            drawing_paths = {key: value.resolve() for key, value in structural.items()}
+            if any(not path.is_file() or path.suffix.lower() != ".dxf" for path in drawing_paths.values()):
+                raise ValueError("请选择有效的结构 DXF。")
             try:
-                combined_root = Path(commonpath((source_root, structural_file.parent)))
+                combined_root = Path(commonpath((source_root, *(path.parent for path in drawing_paths.values()))))
             except ValueError as error:
-                raise ValueError("建筑图与结构板图需要位于同一磁盘。") from error
-            structural = run(structural_file)
-            span = slab_top_floor_span(structural["sheets"][0]["title"])
-            if span and span[0] < span[1]:
-                structural = run(structural_file, repeat_standard_floors=True)
+                raise ValueError("建筑图与结构图需要位于同一磁盘。") from error
             def rebase(project, root):
                 sheets = [{**sheet, "file": (root / sheet["file"]).relative_to(combined_root).as_posix()}
                           for sheet in project["sheets"]]
                 return {**project, "sheets": sheets}
 
-            result = merge_structural_slabs(rebase(result, source_root), rebase(structural, structural_file.parent))
+            result = rebase(result, source_root)
+            if slab_file := drawing_paths.get("structural_slab"):
+                slab = run(slab_file)
+                span = slab_top_floor_span(slab["sheets"][0]["title"])
+                if span and span[0] < span[1]:
+                    slab = run(slab_file, repeat_standard_floors=True)
+                result = merge_structural_slabs(result, rebase(slab, slab_file.parent))
+            for key, sheet, repeat in (("structural_columns", "column_sheet", True),
+                                       ("structural_beams", "beam_sheet", False)):
+                if framing_file := drawing_paths.get(key):
+                    framing = run(framing_file, sheet_number=choices[sheet], repeat_standard_floors=repeat)
+                    result = merge_structural_framing(result, rebase(framing, framing_file.parent))
             source_root = combined_root
     else:
         result = run(source, bounds=bounds, repeat_standard_floors=args.repeat_standard_floors, sheet_number=args.sheet)
@@ -252,6 +275,10 @@ def main(argv=None):
     building_mode.add_argument("--repeat-standard-floors", action="store_true", help="按图名和明确的楼层表复用标准层。")
     building_mode.add_argument("--merge-floors", action="store_true", help="对齐同一 DXF 中建筑平面的标高和共有轴网。")
     run.add_argument("--structural-slab", type=Path, help="在 --merge-floors 中加入轴网已配准的结构降板图。")
+    run.add_argument("--structural-columns", type=Path, help="合并带柱表的结构墙柱 DXF。")
+    run.add_argument("--column-sheet", help="合并结构柱使用的墙柱图号。")
+    run.add_argument("--structural-beams", type=Path, help="合并带梁顶依据的结构梁 DXF。")
+    run.add_argument("--beam-sheet", help="合并结构梁使用的梁平面图号。")
     run.set_defaults(handler=_run)
     render = commands.add_parser("render", help="输出 SVG 和 PNG 识别结果图。")
     render.add_argument("model", type=Path)

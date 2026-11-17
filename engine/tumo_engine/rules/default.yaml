@@ -172,6 +172,10 @@ structural_column:
   tip_tolerance: 2
   fill_tolerance: 1
   section_tolerance: 2
+structural_framing_merge:
+  column_match_tolerance: 2
+  overlap_area: 1
+  level_tolerance: 0.001
 structural_beam:
   top_title_token: '顶梁(?=平法施工图$)'
   reference_layer: 'S[-_]PLAN[-_]TEXT'
