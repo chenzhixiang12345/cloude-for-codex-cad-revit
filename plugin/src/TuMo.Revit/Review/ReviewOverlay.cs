@@ -10,34 +10,50 @@ namespace TuMo.Revit.Review;
 
 internal readonly struct ReviewResult
 {
+    private readonly IReadOnlyDictionary<string, int> counts;
     public int Grids { get; }
-    public int Columns { get; }
-    public int Walls { get; }
     public int LocatedIssues { get; }
 
-    public ReviewResult(int grids, int columns, int walls, int locatedIssues)
+    public ReviewResult(int grids, IReadOnlyDictionary<string, int> counts, int locatedIssues)
     {
         Grids = grids;
-        Columns = columns;
-        Walls = walls;
+        this.counts = counts;
         LocatedIssues = locatedIssues;
     }
+
+    public int Count(string category) => counts.TryGetValue(category, out var count) ? count : 0;
 }
 
 internal static class ReviewOverlay
 {
+    private static readonly IReadOnlyDictionary<string, (string Label, byte Red, byte Green, byte Blue, int Weight)> Styles =
+        new Dictionary<string, (string, byte, byte, byte, int)>(StringComparer.Ordinal)
+        {
+            ["wall"] = ("墙", 8, 120, 105, 3),
+            ["column"] = ("柱", 154, 52, 18, 3),
+            ["door"] = ("门", 124, 58, 237, 4),
+            ["window"] = ("窗", 2, 132, 199, 4),
+            ["wall_opening"] = ("墙洞", 194, 65, 12, 4),
+            ["room"] = ("房间", 145, 96, 6, 2),
+            ["slab"] = ("楼板", 67, 56, 202, 2),
+            ["slab_opening"] = ("楼板洞口", 194, 65, 12, 3),
+            ["ramp"] = ("坡道", 162, 28, 175, 3),
+        };
+
     public static ReviewResult Draw(Document document, ViewDrafting view, TuMoModel model, Sheet sheet,
         Func<double[], XYZ> point, RunLog log)
     {
         var painter = new Painter(document, view);
         var gridStyle = LineStyle(document, "TuMo 审图 - 轴网", new Color(37, 99, 166), 2);
-        var wallStyle = LineStyle(document, "TuMo 审图 - 墙", new Color(8, 120, 105), 3);
-        var columnStyle = LineStyle(document, "TuMo 审图 - 柱", new Color(154, 52, 18), 3);
         var issueStyle = LineStyle(document, "TuMo 审图 - 疑点", new Color(185, 28, 28), 4);
         var anchors = new Dictionary<string, XYZ>(StringComparer.Ordinal);
 
         var defaultSheetId = model.Sheets.FirstOrDefault()?.Id;
         bool OnSelectedSheet(DrawingSource? source) => (source?.Sheet ?? defaultSheetId) == sheet.Id;
+        var copies = new HashSet<string>(model.Elements.Where(IsStandardFloorCopy).Select(element => element.Id), StringComparer.Ordinal);
+        var elements = model.Elements.Where(element => OnSelectedSheet(element.Source) && !copies.Contains(element.Id)).ToArray();
+        var hosts = elements.Where(element => element.Category == "wall").GroupBy(element => element.Id)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
 
         var grids = 0;
         foreach (var grid in model.Grids)
@@ -58,19 +74,20 @@ internal static class ReviewOverlay
             grids++;
         }
 
-        var columns = 0;
-        var walls = 0;
-        foreach (var element in model.Elements)
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var graphics = new Dictionary<string, GraphicsStyle>(StringComparer.Ordinal);
+        foreach (var element in elements)
         {
-            if (!OnSelectedSheet(element.Source))
+            if (!Styles.TryGetValue(element.Category, out var specification))
                 continue;
-
-            var isColumn = element.Category == "column";
-            if (!isColumn && element.Category != "wall")
-                continue;
-
-            var style = isColumn ? columnStyle : wallStyle;
-            var anchor = DrawElement(element, painter, point, style);
+            if (!graphics.TryGetValue(element.Category, out var style))
+            {
+                style = LineStyle(document, $"TuMo 审图 - {specification.Label}",
+                    new Color(specification.Red, specification.Green, specification.Blue), specification.Weight);
+                graphics.Add(element.Category, style);
+            }
+            var host = element.Host != null && hosts.TryGetValue(element.Host, out var wall) ? wall : null;
+            var anchor = DrawElement(element, painter, point, style, host);
             if (anchor == null)
             {
                 log.Write($"审图跳过无效或过小的构件 {element.Id}。");
@@ -78,11 +95,12 @@ internal static class ReviewOverlay
             }
 
             anchors[element.Id] = anchor;
-            painter.Note(anchor, element.Id, 0.6, 0.7);
-            if (isColumn)
-                columns++;
+            var label = ElementLabel(element);
+            if (element.Category == "room")
+                painter.RoomNote(anchor, label);
             else
-                walls++;
+                painter.Note(anchor, label, 0.6, 0.7);
+            counts[element.Category] = counts.TryGetValue(element.Category, out var previous) ? previous + 1 : 1;
         }
 
         var locatedIssues = 0;
@@ -90,6 +108,8 @@ internal static class ReviewOverlay
         {
             var source = issue.Where?.Sheet;
             if (!string.IsNullOrEmpty(source) && source != sheet.Id)
+                continue;
+            if (issue.Element != null && copies.Contains(issue.Element))
                 continue;
 
             var at = issue.Where?.At;
@@ -107,11 +127,27 @@ internal static class ReviewOverlay
             locatedIssues++;
         }
 
-        return new ReviewResult(grids, columns, walls, locatedIssues);
+        return new ReviewResult(grids, counts, locatedIssues);
+    }
+
+    private static bool IsStandardFloorCopy(ModelElement element) =>
+        element.Evidence?.Any(evidence => evidence.StartsWith("standard_floor_reuse:", StringComparison.Ordinal)) == true;
+
+    private static string ElementLabel(ModelElement element)
+    {
+        var mark = element.Category switch
+        {
+            "room" => element.Type?.Name,
+            "door" or "window" or "wall_opening" => element.Type?.Mark,
+            _ => null,
+        };
+        if (string.IsNullOrWhiteSpace(mark) || mark == element.Id)
+            return element.Id;
+        return element.Category == "room" ? $"{mark}\n{element.Id}" : $"{mark} / {element.Id}";
     }
 
     private static XYZ? DrawElement(ModelElement element, Painter painter, Func<double[], XYZ> point,
-        GraphicsStyle style)
+        GraphicsStyle style, ModelElement? host)
     {
         var geometry = element.Geometry;
         if (geometry == null)
@@ -142,9 +178,11 @@ internal static class ReviewOverlay
         if (geometry.Kind == "polygon" && geometry.Points is { Length: >= 3 } vertices && vertices.All(IsPoint))
         {
             var points = vertices.Select(point).ToArray();
-            return painter.Outline(points, style)
-                ? new XYZ(points.Average(p => p.X), points.Average(p => p.Y), points[0].Z)
-                : null;
+            if (!painter.Outline(points, style))
+                return null;
+            var positionInRoom = element.Category == "room" ? element.Parameters?.Seed ?? element.Parameters?.LabelPoint : null;
+            return IsPoint(positionInRoom) ? point(positionInRoom!)
+                : new XYZ(points.Average(p => p.X), points.Average(p => p.Y), points[0].Z);
         }
 
         if (geometry.Kind != "point" || geometry.At is not { } center || !IsPoint(center))
@@ -165,6 +203,22 @@ internal static class ReviewOverlay
                 return null;
             var outline = OverlayGeometry.ColumnOutline(center, width, depth, angle);
             return painter.Outline(outline.Select(point).ToArray(), style) ? position : null;
+        }
+
+        if (element.Category is "door" or "window" or "wall_opening"
+            && type?.Width is double openingWidth && IsPositive(openingWidth)
+            && host?.Geometry is { Kind: "line" } axis && IsPoint(axis.Start) && IsPoint(axis.End))
+        {
+            var first = point(axis.Start!);
+            var last = point(axis.End!);
+            if (painter.IsLongEnough(first, last))
+            {
+                var along = (last - first).Normalize();
+                var midpoint = first + along * (position - first).DotProduct(along);
+                var half = along * RevitApi.Feet(openingWidth / 2);
+                if (painter.Segment(midpoint - half, midpoint + half, style))
+                    return midpoint;
+            }
         }
 
         painter.Cross(position, 0.6, style);
@@ -193,9 +247,8 @@ internal static class ReviewOverlay
         return category.GetGraphicsStyle(GraphicsStyleType.Projection);
     }
 
-    private static ElementId ReviewTextType(Document document)
+    private static ElementId ReviewTextType(Document document, string name, double millimeters)
     {
-        const string name = "TuMo 审图编号 1.5 mm";
         var existing = new FilteredElementCollector(document).OfClass(typeof(TextNoteType))
             .Cast<TextNoteType>().FirstOrDefault(type => type.Name == name);
         if (existing != null)
@@ -208,7 +261,7 @@ internal static class ReviewOverlay
         var reviewType = defaultType.Duplicate(name);
         var size = reviewType.get_Parameter(BuiltInParameter.TEXT_SIZE);
         if (size is { IsReadOnly: false, StorageType: StorageType.Double })
-            size.Set(RevitApi.Feet(1.5));
+            size.Set(RevitApi.Feet(millimeters));
         var background = reviewType.get_Parameter(BuiltInParameter.TEXT_BACKGROUND);
         if (background is { IsReadOnly: false, StorageType: StorageType.Integer })
             background.Set((int)TextElementBackground.TBGR_TRANSPARENT);
@@ -221,12 +274,13 @@ internal static class ReviewOverlay
         private readonly ViewDrafting view;
         private readonly ElementId textType;
         private readonly double shortCurveTolerance;
+        private ElementId? roomTextType;
 
         public Painter(Document document, ViewDrafting view)
         {
             this.document = document;
             this.view = view;
-            textType = ReviewTextType(document);
+            textType = ReviewTextType(document, "TuMo 审图编号 1.5 mm", 1.5);
             shortCurveTolerance = document.Application.ShortCurveTolerance;
         }
 
@@ -281,6 +335,17 @@ internal static class ReviewOverlay
             var origin = anchor + view.RightDirection * RevitApi.Feet(paperDx * view.Scale)
                 + view.UpDirection * RevitApi.Feet(paperDy * view.Scale);
             TextNote.Create(document, view.Id, origin, text, textType);
+        }
+
+        public void RoomNote(XYZ anchor, string text)
+        {
+            roomTextType ??= ReviewTextType(document, "TuMo 审图房名 1.8 mm", 1.8);
+            if (roomTextType == ElementId.InvalidElementId || string.IsNullOrWhiteSpace(text))
+                return;
+
+            using var options = new TextNoteOptions(roomTextType) { HorizontalAlignment = HorizontalTextAlignment.Center };
+            var origin = anchor - view.UpDirection * RevitApi.Feet(2.4 * view.Scale);
+            TextNote.Create(document, view.Id, origin, text, options);
         }
     }
 }

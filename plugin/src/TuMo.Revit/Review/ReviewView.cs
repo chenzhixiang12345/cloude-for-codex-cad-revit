@@ -58,7 +58,13 @@ internal static class ReviewView
         log.Write($"审图导入：{sheet.Id}，毫米换算 {sheet.UnitsToMillimeters ?? 1}，" +
             $"CAD 原点 {origin}，X 方向 {axisX}，Y 方向 {axisY}。");
         var overlay = ReviewOverlay.Draw(document, view, model, sheet, Point, log);
-        var summary = $"轴网 {overlay.Grids}，柱 {overlay.Columns}，墙 {overlay.Walls}，带位置的疑点 {overlay.LocatedIssues}。";
+        var summary = $"轴网 {overlay.Grids}，柱 {overlay.Count("column")}，墙 {overlay.Count("wall")}，带位置的疑点 {overlay.LocatedIssues}。";
+        if (new[] { "door", "window", "wall_opening", "room", "slab", "slab_opening", "ramp" }.Any(category => overlay.Count(category) > 0))
+        {
+            summary += $"\n门 {overlay.Count("door")}，窗 {overlay.Count("window")}，墙洞 {overlay.Count("wall_opening")}，" +
+                $"房间 {overlay.Count("room")}，楼板 {overlay.Count("slab")}，板洞 {overlay.Count("slab_opening")}，坡道 {overlay.Count("ramp")}。" +
+                "\n紫色门，亮蓝色窗，橙色洞口，深黄色房间，深蓝色楼板，紫红色坡道。";
+        }
 
         XYZ? lower = null;
         XYZ? upper = null;
