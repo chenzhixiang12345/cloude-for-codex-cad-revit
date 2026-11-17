@@ -185,3 +185,17 @@ structural_beam:
   section_alignment: 20
   next_row_distance: [220, 280]
   angle_deg: 0.1
+shear_wall_schedule:
+  layers:
+    grid: 'S[-_]TABL'
+    text: 'S[-_]TABL[-_]NUMB'
+  title_pattern: '(?:剪力墙(?:墙)?身表|墙身表)'
+  headings:
+    mark: ['编号', '墙身编号']
+    floor: ['标高', '楼层', '适用楼层']
+    thickness: ['墙厚', '墙厚(MM)', '墙厚(毫米)']
+  mark_pattern: 'Q\d+[A-Z]*'
+  floor_pattern: '(?:(?:第\s*)?(?:首|[一二三四五六七八九]?十[一二三四五六七八九]?|[一二三四五六七八九]|[1-9][0-9]{0,2})\s*(?:层|F)?\s*[-~至到—–]\s*)?(?:第\s*)?(?:首|[一二三四五六七八九]?十[一二三四五六七八九]?|[一二三四五六七八九]|[1-9][0-9]{0,2})\s*(?:层|F)'
+  thickness_pattern: '([0-9]+(?:\.[0-9]+)?)\s*(?:MM|毫米)?'
+  thickness_range: [100, 2000]
+  coordinate_tolerance: 2
