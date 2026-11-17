@@ -188,11 +188,11 @@ def slab_top_floor_span(title: str) -> tuple[int, int] | None:
 
 
 def expand_standard_floors(
-    model: dict, title: str, schedule: Iterable[LevelScheduleRow],
+    model: dict, title: str, schedule: Iterable[LevelScheduleRow], *, floor_span: tuple[int, int] | None = None,
 ) -> tuple[dict, list[str]]:
     """Return a new expanded model and review messages for one confirmed plan."""
     title = normalize("NFKC", title).strip()
-    span, warning = standard_floor_span(title)
+    span, warning = (floor_span, None) if floor_span is not None else standard_floor_span(title)
     if span is None:
         return model, [warning] if warning else []
     first, last = span

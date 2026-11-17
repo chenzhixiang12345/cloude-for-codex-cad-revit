@@ -103,3 +103,18 @@ opening_detail:
   caption_search: 1800
   floor_search: 3000
   include_hidden_witnesses: true
+structural_slab:
+  layers:
+    board: '^S[-_]PLAN[-_]HACH$'
+    legend: '^S[-_]PLAN[-_]TEXT$'
+    thickness: '^S[-_]FLOR[-_]TEXT[-_]BOT$'
+    hole: '^(?:S|SE)[-_]HOLE$'
+  reference_pattern: 'HS\s*[:=为]\s*本层结构标高\s*[。.]?'
+  legend_pattern: '填充区域\s*板顶标高\s*(?:为|[:=])\s*HS\s*-\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>MM|CM|M)?\s*[,。.;]?'
+  thickness_pattern: '(?P<mark>(?:LB|XB|WB)\d+[A-Z]?)\s+H\s*=\s*(?P<thickness>\d+(?:\.\d+)?)\s*(?:MM)?'
+  thickness_range: [30, 1500]
+  legend_x: [400, 510]
+  legend_y: [0, 100]
+  outline_tolerance: 0.01
+  overlap_tolerance_area: 1.0
+  pattern_digits: 6

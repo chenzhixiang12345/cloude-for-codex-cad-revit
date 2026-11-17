@@ -12,6 +12,7 @@ from shapely.geometry import LineString, MultiPoint
 
 from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import Bounds, bind_xrefs, primitives, unit_factor
+from tumo_engine.recognize import structural_slabs
 from tumo_engine.recognize.column import recognize_columns
 from tumo_engine.recognize.elevation import read_elevation_drawing
 from tumo_engine.recognize.geometry import rounded
@@ -21,7 +22,7 @@ from tumo_engine.recognize.opening import recognize_openings
 from tumo_engine.recognize.ramp import identify_ramps
 from tumo_engine.recognize.room import identify_rooms
 from tumo_engine.recognize.slab import recognize_slabs
-from tumo_engine.recognize.standard_floors import expand_standard_floors, standard_floor_span
+from tumo_engine.recognize.standard_floors import expand_standard_floors, slab_top_floor_span, standard_floor_span
 from tumo_engine.recognize.wall import (
     apply_wall_end_extensions, pending_wall_end_extensions, recognize_walls, unbuilt_structural_wall_areas,
 )
@@ -376,21 +377,47 @@ def _add_slabs(model, items, rules, issue):
         publish(opening, _stable_id("SO", host["id"], opening["geometry"]))
 
 
+def _add_structural_slabs(model, doc, items, bounds, level_rows, rules, issue):
+    sheet = model["sheets"][0]
+    base = model["levels"][0]
+    baselines = [row for row in level_rows if row.id == base["id"] and row.elevation_struct is not None]
+    if len(baselines) != 1:
+        issue(f"楼层表缺少 {base['name']} 的明确结构标高，暂不生成结构降板。")
+        return
+    slabs, warnings = structural_slabs.recognize_structural_slabs(doc, items, rules, bounds=bounds)
+    for message, at in warnings:
+        issue(message, at=at)
+    for slab in slabs:
+        slab.update({
+            "id": _stable_id("SL", sheet["id"], slab["geometry"], slab["base_offset"]),
+            "discipline": "struct",
+            "base_level": base["id"],
+            "source": {"sheet": sheet["id"], "handles": slab.pop("handles")},
+        })
+        model["elements"].append(slab)
+
+
+def _use_structural_datum(levels):
+    for level in levels:
+        if "elevation_struct" in level:
+            level.pop("elevation_arch", None)
+
+
 def _level_schedule(items, discipline, rules):
     return read_level_schedule(items, discipline=discipline, layer_pattern=rules["layers"]["level_table"],
                                row_tolerance=rules["level"]["row_tolerance"])
 
 
-def _plan_levels(items, title, discipline, rules):
+def _plan_levels(items, title, discipline, rules, *, floor_number=None):
     config = rules["level"]
     rows, warnings = _level_schedule(items, discipline, rules)
-    if not rows:
+    if not rows and floor_number is None:
         levels, legacy_warnings = recognize_levels(items, title, discipline, rules)
         return levels, rows, warnings + legacy_warnings
 
     numbered = {row.number: row for row in rows if row.number is not None}
     span, _ = standard_floor_span(title)
-    floor = span[0] if span else floor_from_title(title)
+    floor = floor_number if floor_number is not None else (span[0] if span else floor_from_title(title))
     if floor is None:
         floor = min((number for number in numbered if number > 0), default=1)
     top_floor = 1 if floor == -1 else floor + 1
@@ -399,7 +426,7 @@ def _plan_levels(items, title, discipline, rules):
     other = "elevation_arch" if discipline == "struct" else "elevation_struct"
 
     def elevation(level):
-        return level.get(own, level.get(other))
+        return level.get(own) if floor_number is not None else level.get(own, level.get(other))
 
     def level(row, number, source, values):
         if row is not None and elevation(data := row.to_level()) is not None:
@@ -462,6 +489,7 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
     subject = discipline(drawing)
     if subject == "unknown" and sheet_kind(sheet_info.title) == "floor_plan":
         subject = "arch"
+    slab_span = slab_top_floor_span(sheet_info.title) if subject == "struct" else None
     sheet_id = sheet_info.number or _stable_id("S", relative, sheet_info.title)
     model = {
         "schema_version": "0.1",
@@ -505,7 +533,9 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
     level_items = items
     if sheet_info.bounds is not None and sheet_info.bounds != bounds:
         level_items, _ = primitives(doc, factor, sheet_info.bounds)
-    levels, level_rows, warnings = _plan_levels(level_items, sheet_info.title, subject, rules) if verified_levels is None else (verified_levels, [], [])
+    levels, level_rows, warnings = (_plan_levels(level_items, sheet_info.title, subject, rules,
+                                                 floor_number=slab_span[0] if slab_span else None)
+                                    if verified_levels is None else (verified_levels, [], []))
     model["levels"] = levels
     sheet["levels"] = [level["id"] for level in levels]
     for message in warnings:
@@ -538,7 +568,7 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
             scope = footprint.buffer(rules["grid"]["plan_margin"])
             items = [item for item in items if scope.intersects(item.shape)]
 
-    columns = recognize_columns(items, rules)
+    columns = [] if slab_span else recognize_columns(items, rules)
     walls = recognize_walls(items, columns, rules) if subject != "struct" else []
     if subject != "struct":
         for handle, at in unbuilt_structural_wall_areas(items, walls, columns, rules):
@@ -580,17 +610,24 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
         model["elements"].extend(ramps)
         for entry in ramp_warnings:
             issue(entry["message"], at=entry["at"])
+    elif slab_span:
+        _add_structural_slabs(model, doc, level_items, bounds, level_rows, rules, issue)
+        _use_structural_datum(levels)
     if repeat_standard_floors:
-        expanded, repeat_warnings = expand_standard_floors(model, sheet_info.title, level_rows)
+        expanded, repeat_warnings = expand_standard_floors(
+            model, sheet_info.title, level_rows, floor_span=slab_span if slab_span and slab_span[0] < slab_span[1] else None,
+        )
         if expanded is model:
             message = "\n".join(repeat_warnings) or "图名缺少明确的标准层范围。请选择含楼层范围和楼层表的平面图。"
             raise ValueError(message)
         model = expanded
+        if slab_span:
+            _use_structural_datum(model["levels"])
         for message in repeat_warnings:
             issue(message)
     if subject == "arch":
         _apply_window_sills(model, details, sills, sill_conflicts, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
-        if count == 0 and (category != "墙" or subject != "struct"):
+        if count == 0 and (category != "墙" or subject != "struct") and (category != "柱" or not slab_span):
             issue(f"当前图纸范围内没有识别到{category}。")
     return model
