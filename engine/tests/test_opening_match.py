@@ -195,3 +195,38 @@ def test_far_window_number_requires_two_strokes_inside_one_verified_wall_gap(
     else:
         assert openings == []
         assert [entry["code"] for entry in issues] == ["opening_evidence_missing"]
+
+
+@pytest.mark.parametrize("missing", [None, "far_face", "closed_frame", "nearest_number"])
+def test_corner_window_requires_one_closed_frame_and_verified_wall_face(missing):
+    doc = ezdxf.new(units=4)
+    drawing = doc.modelspace()
+    label = drawing.add_text("C0814", dxfattribs={"insert": (1200, 500), "layer": "AD-NUMB"})
+    frame = drawing.add_lwpolyline([(800, -20), (1600, -20), (1600, 20), (800, 20)],
+                                  close=missing != "closed_frame", dxfattribs={"layer": "AE-WIND"})
+    if missing != "far_face":
+        face = drawing.add_lwpolyline([(1600, -100), (1675, -100), (1675, 100), (1600, 100)],
+                                     close=True, dxfattribs={"layer": "S_WALL"})
+    if missing == "nearest_number":
+        drawing.add_text("C0814C", dxfattribs={"insert": (1150, 60), "layer": "AD-NUMB"})
+    rules = defaults()
+    walls = [_wall_fragment("W1", 0, 800)]
+    schedule = [OpeningScheduleRow("C0814", 800, 1400, None, ())]
+
+    openings, issues = _match(doc, walls, schedule, wall_pair_rules=rules["opening"]["wall_pair"],
+                              window_number_rules=rules["opening"]["window_number"], corner_rules=rules)
+
+    if missing:
+        assert not openings
+        assert [issue["code"] for issue in issues] == ["opening_evidence_missing"]
+        return
+    [window] = openings
+    assert not issues
+    assert window["category"] == "window"
+    assert window["geometry"]["at"] == [1200, 0]
+    assert "sill_height" not in window
+    assert set(window["handles"]) == {label.dxf.handle, frame.dxf.handle}
+    extension = window["wall_extension"]
+    assert extension["host"] == "W1"
+    assert extension["geometry"]["end"] == [1600, 0]
+    assert extension["handles"] == [face.dxf.handle]

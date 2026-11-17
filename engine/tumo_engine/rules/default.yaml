@@ -73,6 +73,7 @@ opening:
     width_tolerance: 10
     host_tolerance: 25
     minimum_stroke_spacing: 6
+    maximum_frame_depth: 120
   wall_pair:
     endpoint_tolerance: 30
     width_tolerance: 30

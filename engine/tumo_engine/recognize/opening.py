@@ -179,6 +179,46 @@ def _verified_window_gaps(label, width, symbols, walls, numbers, host_distance, 
     return matches
 
 
+def _closed_window_frame(item, width, number_rules, angle):
+    if item.kind != "polyline" or not item.closed or len(item.points) != 4 or not item.shape.is_valid:
+        return None
+    edges = sorted(segments([item]), key=lambda edge: -edge.length)
+    if len(edges) != 4:
+        return None
+    first, second, *sides = edges
+    axis = first.axis
+    normal = (-axis[1], axis[0])
+    tolerance = number_rules["width_tolerance"]
+    if (any(abs(edge.length - width) > tolerance for edge in (first, second))
+            or not parallel(axis, second.axis, angle)
+            or not all(parallel(normal, edge.axis, angle) for edge in sides)):
+        return None
+    first_offset, second_offset = first.offset(axis), second.offset(axis)
+    depth = abs(first_offset - second_offset)
+    if not number_rules["minimum_stroke_spacing"] <= depth <= number_rules.get("maximum_frame_depth", 120):
+        return None
+    low, high = first.projected(axis)
+    other_low, other_high = second.projected(axis)
+    if max(abs(low - other_low), abs(high - other_high)) > tolerance:
+        return None
+    center = (first_offset + second_offset) / 2
+    return Segment(world((low + other_low) / 2, center, axis), world((high + other_high) / 2, center, axis), (item,))
+
+
+def _window_corner_extensions(label, width, symbols, numbers, walls, items, number_rules, rules):
+    origin = Point(label.points[0])
+    radius = number_rules["radius"]
+    angle = rules["opening"]["wall_pair"]["direction_tolerance_deg"]
+    outlines = {id(item): item for segment, category in symbols.nearby(origin, radius) if category == "window"
+                for item in segment.primitives}
+    for item in outlines.values():
+        frame = _closed_window_frame(item, width, number_rules, angle)
+        if not frame or frame.geometry.distance(origin) > radius or _has_closer_number(label, frame.geometry, numbers):
+            continue
+        if extension := corner_door_host(frame, width, walls, items, rules):
+            yield ((extension["host"],), "window", tuple(extension["at"])), item, extension
+
+
 def _symbol_hosts(symbol, category, possible, width, host_tolerance, angle_tolerance):
     for host in possible:
         center = _center_on_host(symbol, host, host_tolerance, angle_tolerance, width)
@@ -207,7 +247,7 @@ def recognize_openings(
     Width and position tolerances are in millimeters. Each host must have an
     ID and a centerline spanning the measured opening. When wall pair rules
     are supplied, a unique pair may instead return an internal ``wall_pair``
-    with no ``host``. A measured door at a verified wall face may return a
+    with no ``host``. A measured door or window at a verified wall face may return a
     ``wall_extension``. The caller reconciles these host changes before export.
     The caller supplies each candidate's final ID, floor, and sheet source.
     """
@@ -321,12 +361,20 @@ def recognize_openings(
                 for pair, at in _matching_wall_pairs(symbol, possible, width, host_tolerance, wall_pair_rules):
                     matches[(pair, category, at)].extend(symbol.primitives)
         evidence = ["door:swing_and_jambs"] if measured else []
-        if (not nearby and not is_wall and not measured and numbers is not None and number_layer.search(layer_key(label.layer))
-                and window_mark_pattern.fullmatch(mark)):
+        window_number = (not is_wall and not measured and numbers is not None
+                         and number_layer.search(layer_key(label.layer)) and window_mark_pattern.fullmatch(mark))
+        if window_number and not nearby:
             matches = _verified_window_gaps(label, width, symbols, wall_index, numbers,
                                              maximum_half_thickness + host_tolerance, wall_pair_rules, window_number_rules)
             if matches:
                 evidence.append("window:two_strokes_verified_gap")
+        if window_number and not matches and corner_rules is not None:
+            for key, item, extension in _window_corner_extensions(label, width, symbols, numbers, walls, items,
+                                                                window_number_rules, corner_rules):
+                matches.setdefault(key, []).append(item)
+                extensions_by_match[key] = extension
+            if matches:
+                evidence.append("window:closed_frame_verified_gap")
         if not matches:
             code = "host_missing" if nearby else "opening_evidence_missing"
             message = "没有找到覆盖该洞口的宿主墙。" if nearby else "标注附近没有尺寸相符的洞口线。"
