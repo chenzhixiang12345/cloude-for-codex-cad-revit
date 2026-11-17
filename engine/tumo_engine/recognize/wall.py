@@ -1,3 +1,4 @@
+from collections import defaultdict
 import re
 from itertools import combinations
 from math import dist
@@ -9,6 +10,9 @@ from shapely.ops import nearest_points, unary_union
 from tumo_engine.index import SpatialIndex
 from tumo_engine.preprocess import layer_key
 from tumo_engine.recognize.geometry import direction, merge_collinear, parallel, rounded, segments, source_handles, world
+
+
+_COINCIDENT_TOLERANCE_MM = 0.01
 
 
 def _pair(first, second, cfg):
@@ -37,8 +41,12 @@ def _footprint(line, width):
 
 
 def _wall_footprint(wall):
+    return _footprint(_wall_line(wall), wall["type"]["thickness"])
+
+
+def _wall_line(wall):
     geometry = wall["geometry"]
-    return _footprint(LineString((geometry["start"], geometry["end"])), wall["type"]["thickness"])
+    return LineString((geometry["start"], geometry["end"]))
 
 
 def unbuilt_structural_wall_areas(items, walls, columns, rules):
@@ -106,7 +114,7 @@ def _supplement_closed_outlines(items, columns, ordinary_walls, rules):
     layers = rules["layers"]
     existing = []
     for wall, _ in ordinary_walls:
-        line = LineString((wall["geometry"]["start"], wall["geometry"]["end"]))
+        line = _wall_line(wall)
         existing.append((line, _footprint(line, wall["type"]["thickness"])))
     wall_index = SpatialIndex(existing, lambda pair: pair[1])
     column_index = SpatialIndex((shape for _, shape in columns), lambda shape: shape)
@@ -151,14 +159,37 @@ def _supplement_closed_outlines(items, columns, ordinary_walls, rules):
             if line.length < cfg["minimum_length"]:
                 continue
             accepted.append(_footprint(line, width))
-            yield ({
+            yield item, {
                 "category": "wall",
                 "type": {"name": f"墙 {width:g} mm", "thickness": width},
                 "geometry": {"kind": "line", "start": rounded(line.coords[0]), "end": rounded(line.coords[-1])},
                 "confidence": 0.82,
                 "handles": source_handles([item]),
                 "evidence": [f"layer:{layer}", "closed_wall_outline", f"parallel_pair:{width:g}"],
-            }, [])
+            }
+
+
+def _replace_covered_walls(ordinary_walls, by_outline, supplements):
+    replaced = set()
+    additions = []
+    for outline, wall in supplements:
+        line = _wall_line(wall)
+        axis = line.buffer(_COINCIDENT_TOLERANCE_MM)
+        footprint = _wall_footprint(wall).buffer(_COINCIDENT_TOLERANCE_MM)
+        for candidate, joins in by_outline.get(id(outline), ()):
+            # A short wall with column joins needs a confirmed endpoint to transfer the joins.
+            if joins or candidate["type"] != wall["type"] or id(candidate) in replaced:
+                continue
+            short_line = _wall_line(candidate)
+            if line.length <= short_line.length + _COINCIDENT_TOLERANCE_MM or not axis.covers(short_line):
+                continue
+            if not footprint.covers(_wall_footprint(candidate)):
+                continue
+            wall["handles"] = sorted(set(wall["handles"] + candidate["handles"]))
+            wall["evidence"] = list(dict.fromkeys(wall["evidence"] + candidate["evidence"]))
+            replaced.add(id(candidate))
+        additions.append((wall, []))
+    return [(wall, joined) for wall, joined in ordinary_walls if id(wall) not in replaced] + additions
 
 
 def recognize_walls(items, columns, rules):
@@ -176,15 +207,16 @@ def recognize_walls(items, columns, rules):
             if pair is None:
                 continue
             overlap, tolerance, width, start, end = pair
-            common_outline = any(
-                a is b and a.closed for a in first.primitives for b in second.primitives
-            )
-            candidates.append((not common_outline, -overlap, tolerance, i, j, width, start, end))
+            common_outlines = {id(item) for item in first.primitives if item.closed} & {
+                id(item) for item in second.primitives if item.closed
+            }
+            candidates.append((not common_outlines, -overlap, tolerance, i, j, width, start, end, common_outlines))
 
     used_lines = set()
     column_index = SpatialIndex(columns, lambda item: item[1])
     output = []
-    for not_common, _, _, i, j, width, start, end in sorted(candidates):
+    by_outline = defaultdict(list)
+    for not_common, _, _, i, j, width, start, end, common_outlines in sorted(candidates, key=lambda row: row[:5]):
         if i in used_lines or j in used_lines:
             continue
         used_lines.update((i, j))
@@ -206,13 +238,15 @@ def recognize_walls(items, columns, rules):
             evidence.append("closed_outline")
         if relations:
             evidence.append("ends_on:column")
-        output.append(({
+        wall = {
             "category": "wall",
             "type": {"name": f"墙 {width:g} mm", "thickness": width},
             "geometry": {"kind": "line", "start": rounded(snapped[0]), "end": rounded(snapped[1])},
             "confidence": 0.9 if not not_common else 0.87 if relations else 0.78,
             "handles": source_handles((*lines[i].primitives, *lines[j].primitives)),
             "evidence": evidence,
-        }, relations))
-    output.extend(list(_supplement_closed_outlines(items, columns, output, rules)))
-    return output
+        }
+        output.append((wall, relations))
+        for outline in common_outlines:
+            by_outline[outline].append((wall, relations))
+    return _replace_covered_walls(output, by_outline, _supplement_closed_outlines(items, columns, output, rules))

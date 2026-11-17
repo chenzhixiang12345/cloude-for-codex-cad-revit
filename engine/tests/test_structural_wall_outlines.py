@@ -101,6 +101,45 @@ def test_avoids_duplicate_outline_over_several_existing_walls(tmp_path):
     assert all("closed_wall_outline" not in wall["evidence"] for wall in walls)
 
 
+def test_replaces_short_wall_covered_by_a_longer_wall_from_its_own_outline(tmp_path):
+    doc = ezdxf.new(units=4)
+    points = [(0, 0), (900, 0), (900, 300), (660, 300), (660, 200),
+              (240, 200), (240, 300), (0, 300)]
+    plan = doc.modelspace()
+    outline = plan.add_lwpolyline(points, close=True, dxfattribs={"layer": "AE-WALL"})
+    extra = plan.add_line((260, 200), (640, 200), dxfattribs={"layer": "AE-WALL"})
+    path = tmp_path / "三层平面图.dxf"
+    doc.saveas(path)
+
+    walls = [wall for wall in run(path)["elements"] if wall["category"] == "wall"]
+
+    [wall] = walls
+    assert wall["geometry"] == {"kind": "line", "start": [0, 100], "end": [900, 100]}
+    assert wall["type"]["thickness"] == 200
+    assert wall["source"]["handles"] == sorted([outline.dxf.handle, extra.dxf.handle])
+    assert "closed_outline" in wall["evidence"]
+
+
+def test_shared_block_insert_is_not_proof_of_the_same_wall_outline(tmp_path):
+    doc = ezdxf.new(units=4)
+    floor = doc.blocks.new("WALLS")
+    short = floor.add_lwpolyline([(240, 0), (660, 0), (660, 200), (240, 200)], close=True,
+                                 dxfattribs={"layer": "AE-WALL"})
+    long = floor.add_lwpolyline([(0, 0), (900, 0), (900, 200), (0, 200)], close=True,
+                                dxfattribs={"layer": "S_WALL"})
+    insert = doc.modelspace().add_blockref("WALLS", (0, 0))
+    path = tmp_path / "三层平面图.dxf"
+    doc.saveas(path)
+
+    walls = [wall for wall in run(path)["elements"] if wall["category"] == "wall"]
+
+    assert len(walls) == 2
+    assert {tuple(wall["source"]["handles"]) for wall in walls} == {
+        tuple(sorted([long.dxf.handle, insert.dxf.handle])),
+        tuple(sorted([short.dxf.handle, insert.dxf.handle])),
+    }
+
+
 def test_marks_unverified_stepped_wall_without_guessing_its_build(tmp_path):
     doc = ezdxf.new(units=4)
     points = [(0, 0), (700, 0), (700, 950), (300, 950), (300, 1250), (0, 1250)]
