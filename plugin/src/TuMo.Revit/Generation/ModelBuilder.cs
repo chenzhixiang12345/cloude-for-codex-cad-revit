@@ -14,10 +14,11 @@ internal static class ModelBuilder
     public static string Build(Document document, TuMoModel model, RunLog log)
     {
         var candidates = model.Elements.Where(e => e.Category is "column" or "wall").ToArray();
+        var openings = model.Elements.Where(e => e.Category is "door" or "window" or "wall_opening").ToArray();
         if (model.Grids.Length == 0 && candidates.Length == 0)
             throw new InvalidOperationException("这张图没有识别出轴网、柱或墙。请查看疑点报告。");
 
-        RejectCollisions(document, candidates);
+        RejectCollisions(document, candidates.Concat(openings));
         var sheets = model.Sheets.ToDictionary(s => s.Id, StringComparer.Ordinal);
         using var transaction = new Transaction(document, "TuMo 生成模型");
         transaction.Start();
@@ -60,9 +61,10 @@ internal static class ModelBuilder
 
             document.Regenerate();
             JoinGeometry.Connect(document, created, model.Relations, log);
+            var openingReport = CreateOpenings(document, model, openings, created, levels, dimensions, sheets, ids, log);
             if (transaction.Commit() != TransactionStatus.Committed)
                 throw new InvalidOperationException("Revit 无法提交模型。请查看日志。");
-            return $"标高 {levels.Count}，轴网 {model.Grids.Length}，柱 {candidates.Count(e => e.Category == "column")}，墙 {candidates.Count(e => e.Category == "wall")}。";
+            return $"标高 {levels.Count}，轴网 {model.Grids.Length}，柱 {candidates.Count(e => e.Category == "column")}，墙 {candidates.Count(e => e.Category == "wall")}。" + openingReport;
         }
         catch
         {
@@ -72,14 +74,79 @@ internal static class ModelBuilder
         }
     }
 
-    private static void RejectCollisions(Document document, ModelElement[] candidates)
+    private static string CreateOpenings(Document document, TuMoModel model, ModelElement[] openings,
+        Dictionary<string, Element> created, Dictionary<string, Level> levels, Dictionary<string, Extent> dimensions,
+        Dictionary<string, Sheet> sheets, TuMoIds ids, RunLog log)
+    {
+        if (openings.Length == 0)
+            return "";
+
+        var builder = new ModelOpenings(document, log);
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal) { ["door"] = 0, ["window"] = 0, ["wall_opening"] = 0 };
+        var attempted = new HashSet<string>(created.Keys, StringComparer.Ordinal);
+        var review = 0;
+        foreach (var source in openings)
+        {
+            if (!attempted.Add(source.Id))
+            {
+                log.Write($"跳过门窗或墙洞 {source.Id}：TuMo 编号重复。");
+                continue;
+            }
+
+            using var change = new SubTransaction(document);
+            if (change.Start() != TransactionStatus.Started)
+                throw new InvalidOperationException("不能开始门窗或墙洞子事务。");
+            try
+            {
+                if (source.Host == null || !created.TryGetValue(source.Host, out var element) || element is not Wall wall)
+                    throw new InvalidOperationException($"找不到宿主墙 {source.Host ?? "（无）"}。");
+                var hostExtent = dimensions[source.Host];
+                var level = source.BaseLevel == null ? hostExtent.Base : levels.TryGetValue(source.BaseLevel, out var found)
+                    ? found : throw new InvalidOperationException($"找不到底标高 {source.BaseLevel}。");
+                var geometry = source.Geometry;
+                if (geometry?.Kind != "point")
+                    throw new InvalidOperationException("需要有效的点几何。");
+
+                var transform = TransformFor(source.Source, sheets);
+                var center = Point(geometry.At, level.ProjectElevation, model, transform);
+                var facing = geometry.Facing == null ? null : Point(geometry.Facing, 0, model, transform)
+                    - Point(new[] { 0d, 0d }, 0, model, transform);
+                var bottom = hostExtent.Elevation + hostExtent.BaseOffset;
+                var (result, needsReview) = builder.Create(source, wall, level, center, facing, bottom, bottom + hostExtent.Height);
+                SetMark(result, source.Type?.Mark);
+                ids.Set(result, source.Id);
+                if (change.Commit() != TransactionStatus.Committed)
+                    throw new InvalidOperationException("Revit 未能提交该构件。");
+
+                counts[source.Category]++;
+                if (needsReview)
+                    review++;
+                log.Write($"生成 {source.Id}，Revit ID {RevitApi.IdValue(result.Id)}，宿主 {source.Host}。");
+            }
+            catch (Exception error) when (ModelOpenings.CanSkip(error))
+            {
+                log.Write($"跳过门窗或墙洞 {source.Id}：{error.Message}");
+            }
+            finally
+            {
+                if (change.GetStatus() == TransactionStatus.Started)
+                    change.RollBack();
+            }
+        }
+
+        var skipped = openings.Length - counts.Values.Sum();
+        return $"门 {counts["door"]}，窗 {counts["window"]}，墙洞 {counts["wall_opening"]}，待核对 {review}，跳过 {skipped}。";
+    }
+
+    private static void RejectCollisions(Document document, IEnumerable<ModelElement> candidates)
     {
         var ids = new HashSet<string>(candidates.Select(element => element.Id), StringComparer.Ordinal);
         if (ids.Count == 0)
             return;
-        var categories = new[] { BuiltInCategory.OST_Walls, BuiltInCategory.OST_StructuralColumns };
+        var categories = new[] { BuiltInCategory.OST_Walls, BuiltInCategory.OST_StructuralColumns,
+            BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows };
         var existing = new FilteredElementCollector(document).WhereElementIsNotElementType()
-            .WherePasses(new ElementMulticategoryFilter(categories));
+            .WherePasses(new LogicalOrFilter(new ElementMulticategoryFilter(categories), new ElementClassFilter(typeof(Opening))));
         foreach (var element in existing)
         {
             var id = TuMoIds.Get(element);
