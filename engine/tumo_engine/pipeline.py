@@ -16,6 +16,7 @@ from tumo_engine.recognize.geometry import rounded
 from tumo_engine.recognize.grid import recognize_grids
 from tumo_engine.recognize.level import floor_from_title, recognize_levels
 from tumo_engine.recognize.opening import recognize_openings
+from tumo_engine.recognize.ramp import identify_ramps
 from tumo_engine.recognize.room import identify_rooms
 from tumo_engine.recognize.slab import recognize_slabs
 from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_areas
@@ -397,6 +398,11 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
         _add_openings(model, items, level_items, drawing, root, rules, issue)
         _add_rooms(model, items, rules, issue)
         _add_slabs(model, items, rules, issue)
+        ramps, ramp_warnings = identify_ramps(items, sheet_id=sheet_id, base_level=levels[0]["id"],
+                                               top_level=levels[1]["id"], rules=rules)
+        model["elements"].extend(ramps)
+        for entry in ramp_warnings:
+            issue(entry["message"], at=entry["at"])
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
         if count == 0 and (category != "墙" or subject != "struct"):
             issue(f"当前图纸范围内没有识别到{category}。")
