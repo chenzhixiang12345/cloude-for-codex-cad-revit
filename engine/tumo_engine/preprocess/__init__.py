@@ -2,7 +2,7 @@
 
 from collections import Counter
 from dataclasses import dataclass
-from math import isfinite
+from math import ceil, isfinite
 from pathlib import Path
 import re
 from statistics import median
@@ -26,11 +26,14 @@ class Primitive:
     radius: float = 0
     linetype: str = ""
     closed: bool = False
+    sweep_deg: float = 0
 
     @property
     def shape(self):
         if self.kind == "circle":
             return Point(self.points[0]).buffer(self.radius)
+        if self.kind == "arc":
+            return LineString(self.points[1:])
         if self.closed and len(self.points) >= 3:
             return Polygon(self.points)
         if len(self.points) > 1:
@@ -202,6 +205,23 @@ def _make_primitive(entity, layer, handles, names, factor):
         return Primitive("polyline", layer, points, handles, names, linetype=linetype, closed=closed) if len(points) > 1 else None
     if kind == "CIRCLE":
         return Primitive("circle", layer, (point(entity.ocs().to_wcs(entity.dxf.center), factor),), handles, names, radius=entity.dxf.radius * factor)
+    if kind == "ARC":
+        radius = entity.dxf.radius * factor
+        start = entity.dxf.start_angle
+        sweep = (entity.dxf.end_angle - start) % 360
+        ocs = entity.ocs()
+        if not (isfinite(radius) and radius > 0 and isfinite(sweep) and sweep > 0 and abs(ocs.uz.z) >= 1 - 1e-8):
+            return None
+        steps = ceil(sweep / 10)
+        offsets = {sweep * index / steps for index in range(steps + 1)}
+        for angle in (0, 90, 180, 270):
+            offset = (angle - start) % 360
+            if offset < sweep:
+                offsets.add(offset)
+        center = point(ocs.to_wcs(entity.dxf.center), factor)
+        curve = tuple(point(vertex, factor) for vertex in entity.vertices(start + offset for offset in sorted(offsets)))
+        return Primitive("arc", layer, (center, *curve), handles, names, radius=radius,
+                         linetype=linetype, sweep_deg=sweep)
     if kind in {"TEXT", "MTEXT", "ATTRIB"}:
         p = entity.dxf.insert
         if kind != "MTEXT":
@@ -252,7 +272,8 @@ def primitives(doc, factor, bounds=None):
                 continue
             if area is not None and not area.intersects(item.shape):
                 continue
-            key = (item.kind, layer_key(item.layer), tuple(sorted(item.points)), item.text, item.radius, item.closed)
+            key = (item.kind, layer_key(item.layer), tuple(sorted(item.points)), item.text,
+                   item.radius, item.closed, item.sweep_deg)
             if key in seen:
                 continue
             seen.add(key)
