@@ -1,6 +1,8 @@
+from copy import deepcopy
 from math import isclose
 
 import ezdxf
+import pytest
 from shapely.geometry import LineString, Point, Polygon
 
 from tumo_engine.pipeline import run
@@ -144,6 +146,83 @@ def test_replaces_short_wall_covered_by_a_longer_wall_from_its_own_outline(tmp_p
     assert wall["type"]["thickness"] == 200
     assert wall["source"]["handles"] == sorted([outline.dxf.handle, extra.dxf.handle])
     assert "closed_outline" in wall["evidence"]
+
+
+def test_fills_missing_cad_wall_span_after_binding_windows_at_both_ends(tmp_path):
+    doc = ezdxf.new(units=4)
+    plan = doc.modelspace()
+    outline = plan.add_lwpolyline(
+        [(1600, -150), (2700, -150), (2700, 150), (2300, 150), (2300, 1250),
+         (2200, 1250), (2200, 150), (1600, 150)], close=True, dxfattribs={"layer": "AE-WALL"},
+    )
+    plan.add_lwpolyline([(725, -150), (800, -150), (800, 150), (725, 150)],
+                        close=True, dxfattribs={"layer": "S_WALL"})
+    for y in (-150, 150):
+        plan.add_line((3500, y), (4500, y), dxfattribs={"layer": "WALL"})
+    for begin in (800, 2700):
+        end = begin + 800
+        plan.add_lwpolyline([(begin, -20), (end, -20), (end, 20), (begin, 20)],
+                            close=True, dxfattribs={"layer": "AE-WIND"})
+        plan.add_text("C0814", dxfattribs={"insert": (begin + 400, 500), "layer": "AD-NUMB"})
+    for x, y, value in ((0, 4500, "门窗编号"), (1500, 4500, "洞口尺寸"),
+                        (0, 4000, "C0814"), (1500, 4000, "800×1400")):
+        plan.add_text(value, dxfattribs={"insert": (x, y)})
+    path = tmp_path / "三层建筑平面图.dxf"
+    doc.saveas(path)
+
+    model = run(path)
+
+    first, second = sorted((window for window in model["elements"] if window["category"] == "window"),
+                           key=lambda window: window["geometry"]["at"])
+    assert [first["geometry"]["at"], second["geometry"]["at"]] == [[1200, 0], [3100, 0]]
+    by_id = {element["id"]: element for element in model["elements"]}
+    first_host, second_host = (by_id[window["host"]] for window in (first, second))
+    assert set(first_host["source"]["handles"]) >= {outline.dxf.handle}
+    assert first_host["geometry"] == {"kind": "line", "start": [800, 0], "end": [2700, 0]}
+    assert "full_cad_end_faces" in first_host["evidence"]
+    assert second_host["geometry"] == {"kind": "line", "start": [2700, 0], "end": [4500, 0]}
+    assert first_host["base_level"] == first["base_level"] == second_host["base_level"] == second["base_level"]
+    assert wall_footprint(first_host).intersection(wall_footprint(second_host)).area == 0
+
+
+@pytest.mark.parametrize("obstruction", ["wall", "column", "related-host", "different-outline", "changed-endpoint"])
+def test_wall_end_recovery_preserves_boundaries_and_existing_relations(obstruction):
+    from tumo_engine.preprocess import Primitive
+    from tumo_engine.recognize.wall import apply_wall_end_extensions, pending_wall_end_extensions
+    from tumo_engine.rules import defaults
+
+    source = ("FLOOR", "PROFILE")
+    outline = Primitive("polyline", "AE-WALL",
+                        ((0, 0), (1100, 0), (1100, 300), (500, 300), (500, 1400),
+                         (400, 1400), (400, 300), (0, 300)),
+                        source, (), closed=True)
+    host = {
+        "id": "W-1", "category": "wall", "evidence": ["closed_outline"],
+        "geometry": {"kind": "line", "start": [500, 150], "end": [1100, 150]},
+        "type": {"thickness": 300},
+        "source": {"handles": list(source) if obstruction != "different-outline" else ["FLOOR", "OTHER"]},
+    }
+    relation = [{"kind": "join", "a": host["id"], "b": "C-1"}] if obstruction == "related-host" else []
+    walls, columns = [host], []
+    pending = pending_wall_end_extensions([outline], walls, relation, defaults())
+    if obstruction in {"related-host", "different-outline"}:
+        assert not pending
+    else:
+        assert host["id"] in pending
+    if obstruction == "wall":
+        walls.append({
+            "id": "W-2", "category": "wall", "type": {"thickness": 100},
+            "geometry": {"kind": "line", "start": [300, -100], "end": [300, 400]},
+        })
+    elif obstruction == "column":
+        columns.append(({"id": "C-1"}, Polygon([(300, 50), (400, 50), (400, 250), (300, 250)])))
+    elif obstruction == "changed-endpoint":
+        host["geometry"]["start"] = [450, 150]
+    baseline = deepcopy(walls)
+
+    apply_wall_end_extensions(walls, columns, pending)
+
+    assert walls == baseline
 
 
 def test_shared_block_insert_is_not_proof_of_the_same_wall_outline(tmp_path):

@@ -9,7 +9,7 @@ from shapely.ops import nearest_points, unary_union
 
 from tumo_engine.index import SpatialIndex
 from tumo_engine.preprocess import layer_key
-from tumo_engine.recognize.geometry import direction, merge_collinear, parallel, rounded, segments, source_handles, world
+from tumo_engine.recognize.geometry import direction, dot, merge_collinear, parallel, rounded, segments, source_handles, world
 
 
 _COINCIDENT_TOLERANCE_MM = 0.01
@@ -108,6 +108,112 @@ def _trim_tiny_end_overlaps(line, wall_overlaps, cfg):
     return LineString((line.interpolate(begin), line.interpolate(finish)))
 
 
+def _closed_outline_spans(outline, padded, edges, cfg):
+    for first, second in combinations(edges, 2):
+        pair = _pair(first, second, cfg)
+        if pair is None:
+            continue
+        _, tolerance, width, start, end = pair
+        line = LineString((start, end))
+        if padded.covers(_footprint(line, width)):
+            yield _extend_within_outline(line, width, first, outline, padded), width, tolerance
+
+
+def _has_full_end_faces(line, width, edges):
+    start, end = line.coords
+    dx, dy = direction(start, end)
+    ox, oy = -dy * width / 2, dx * width / 2
+    for x, y in (start, end):
+        first, last = (x - ox, y - oy), (x + ox, y + oy)
+        if not any(
+            max(dist(first, edge.a), dist(last, edge.b)) <= _COINCIDENT_TOLERANCE_MM
+            or max(dist(first, edge.b), dist(last, edge.a)) <= _COINCIDENT_TOLERANCE_MM
+            for edge in edges
+        ):
+            return False
+    return True
+
+
+def pending_wall_end_extensions(items, elements, relations, rules):
+    """Save single-end extensions backed by both end faces of one source outline."""
+    related = {rel[key] for rel in relations for key in ("a", "b")}
+    walls = defaultdict(list)
+    for wall in elements:
+        if wall["category"] == "wall" and "closed_outline" in wall["evidence"] and wall["id"] not in related:
+            for handle in wall["source"]["handles"]:
+                walls[handle].append(wall)
+
+    proposals = defaultdict(set)
+    cfg = dict(rules["wall"], minimum_overlap_ratio=0)
+    layers = rules["layers"]
+    outline_layer = re.compile("|".join((layers["walls"], layers["structural_wall_outlines"])))
+    for item in items:
+        if (item.kind != "polyline" or not item.closed or not item.handles
+                or not outline_layer.search(layer_key(item.layer))):
+            continue
+        matching = [wall for wall in walls.get(item.handles[-1], ())
+                    if set(item.handles) <= set(wall["source"]["handles"])]
+        if not matching:
+            continue
+        outline = item.shape
+        if not outline.is_valid or outline.area <= 0:
+            continue
+        edges = list(segments([item]))
+        for line, width, _ in _closed_outline_spans(outline, outline.buffer(1), edges, cfg):
+            if not _has_full_end_faces(line, width, edges):
+                continue
+            axis = line.buffer(_COINCIDENT_TOLERANCE_MM)
+            for wall in matching:
+                old = _wall_line(wall)
+                if width != wall["type"]["thickness"] or old.length < line.length / 2 or not axis.covers(old):
+                    continue
+                for end, other in (("start", "end"), ("end", "start")):
+                    old_tip, anchor = wall["geometry"][end], wall["geometry"][other]
+                    far_tip, near_tip = sorted(line.coords, key=lambda point: -dist(point, anchor))
+                    if (dist(near_tip, anchor) <= _COINCIDENT_TOLERANCE_MM
+                            and dist(far_tip, old_tip) >= cfg["minimum_length"]):
+                        # Different edge pairs can measure the same CAD end within model precision.
+                        proposals[wall["id"]].add((end, tuple(old_tip), tuple(rounded(far_tip))))
+    return {wall: next(iter(choices)) for wall, choices in proposals.items() if len(choices) == 1}
+
+
+def apply_wall_end_extensions(elements, columns, pending):
+    """Extend the unmodified end of a bound wall while retaining its identity and openings."""
+    if not pending:
+        return
+    walls = [wall for wall in elements if wall["category"] == "wall"]
+    footprints = SpatialIndex(((wall["id"], _wall_footprint(wall)) for wall in walls), lambda entry: entry[1])
+    column_index = SpatialIndex((shape for _, shape in columns), lambda shape: shape)
+    proposals = []
+    for wall in walls:
+        if wall["id"] not in pending:
+            continue
+        end, old_tip, target = pending[wall["id"]]
+        geo = wall["geometry"]
+        if tuple(geo[end]) != old_tip:
+            continue
+        other = geo["start"] if end == "end" else geo["end"]
+        axis = direction(other, old_tip)
+        along = dot((target[0] - old_tip[0], target[1] - old_tip[1]), axis)
+        tip = rounded((old_tip[0] + along * axis[0], old_tip[1] + along * axis[1]))
+        if along <= 0 or dist(tip, target) > _COINCIDENT_TOLERANCE_MM:
+            continue
+        added = _footprint(LineString((old_tip, tip)), wall["type"]["thickness"])
+        interior = added.buffer(-_COINCIDENT_TOLERANCE_MM)
+        if (any(identifier != wall["id"] and interior.intersection(shape).area > 0
+                for identifier, shape in footprints.nearby(interior, 0))
+                or any(interior.intersection(shape).area > 0 for shape in column_index.nearby(interior, 0))):
+            continue
+        proposals.append((wall, end, tip, added, interior))
+    proposed = SpatialIndex(enumerate(proposals), lambda entry: entry[1][3])
+    for index, (wall, end, tip, _, interior) in enumerate(proposals):
+        if any(index != other and interior.intersection(other_plan[3]).area > 0
+               for other, other_plan in proposed.nearby(interior, 0)):
+            continue
+        wall["geometry"][end] = tip
+        wall["evidence"].append("full_cad_end_faces")
+
+
 def _supplement_closed_outlines(items, columns, ordinary_walls, rules):
     # Work within one real CAD outline at a time. Never pair edges across separate outlines.
     cfg = dict(rules["wall"], minimum_overlap_ratio=0)
@@ -133,17 +239,7 @@ def _supplement_closed_outlines(items, columns, ordinary_walls, rules):
         padded_outline = outline.buffer(1)
         if re.search(layers["walls"], layer):
             architectural_outlines.append((item, layer, padded_outline))
-        candidates = []
-        for first, second in combinations(segments([item]), 2):
-            pair = _pair(first, second, cfg)
-            if pair is None:
-                continue
-            _, tolerance, width, start, end = pair
-            line = LineString((start, end))
-            if not padded_outline.covers(_footprint(line, width)):
-                continue
-            line = _extend_within_outline(line, width, first, outline, padded_outline)
-            candidates.append((line, width, tolerance))
+        candidates = _closed_outline_spans(outline, padded_outline, list(segments([item])), cfg)
 
         for line, width, _ in sorted(candidates, key=lambda row: (-row[0].length, row[2])):
             strip = _footprint(line, width)

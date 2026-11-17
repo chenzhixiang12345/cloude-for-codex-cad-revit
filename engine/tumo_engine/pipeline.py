@@ -22,7 +22,9 @@ from tumo_engine.recognize.ramp import identify_ramps
 from tumo_engine.recognize.room import identify_rooms
 from tumo_engine.recognize.slab import recognize_slabs
 from tumo_engine.recognize.standard_floors import expand_standard_floors, standard_floor_span
-from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_areas
+from tumo_engine.recognize.wall import (
+    apply_wall_end_extensions, pending_wall_end_extensions, recognize_walls, unbuilt_structural_wall_areas,
+)
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
 from tumo_engine.tables import OpeningScheduleRow, WallOpeningScheduleRow, read_opening_schedule
@@ -568,7 +570,9 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
             )
     if subject == "arch":
         details, sills, sill_conflicts = _opening_annotations(drawing, root, issue, read_elevations)
+        wall_ends = pending_wall_end_extensions(items, model["elements"], model["relations"], rules)
         _add_openings(model, items, level_items, drawing, root, rules, issue, read_companion, details)
+        apply_wall_end_extensions(model["elements"], columns, wall_ends)
         _add_rooms(model, items, rules, issue)
         _add_slabs(model, items, rules, issue)
         ramps, ramp_warnings = identify_ramps(items, sheet_id=sheet_id, base_level=levels[0]["id"],
