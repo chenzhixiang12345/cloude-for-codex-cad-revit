@@ -12,7 +12,10 @@ from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.pipeline import _level_schedule, _read_opening_companion, _recognize_plan, _stable_id
 from tumo_engine.preprocess import bind_xrefs, primitives, unit_factor
 from tumo_engine.recognize.elevation import read_elevation_drawing
+from tumo_engine.recognize.grid import recognize_grids
 from tumo_engine.recognize.level import floor_from_title
+from tumo_engine.recognize.plan_registration import register_plan
+from tumo_engine.recognize.roof_zones import is_roof_zone_plan, roof_zone_spots
 from tumo_engine.recognize.standard_floors import standard_floor_span
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import discipline, drawing_sheets, input_drawing, sheet_kind
@@ -48,10 +51,39 @@ def _verified_level_pair(title, schedule):
     return result
 
 
+def _roof_review_plan(sheet, items, rules, drawing, root, factor, anchor_grids):
+    spots = roof_zone_spots(items, rules)
+    if not spots:
+        return None, f"{sheet.number} {sheet.title}：未找到可定位的局部标高箭头，保留单图核对。"
+    transform, note = register_plan(anchor_grids, recognize_grids(items, rules))
+    if transform is None:
+        return None, f"{sheet.number} {sheet.title}：{note}"
+
+    issues = []
+    for spot in spots:
+        title = "女儿墙顶标高" if spot.is_parapet else "局部标高"
+        source = "/".join(spot.label_handles)
+        evidence = "、".join("/".join(handles) for handles in spot.evidence_handles)
+        issues.append({
+            "id": _stable_id("I", sheet.number, "roof_zone", spot.label_handles, spot.at),
+            "severity": "warn",
+            "message": f"{title} {spot.elevation_mm:g} mm，待核对对应构件。CAD 句柄 {source}。标高依据 {evidence}。",
+            "where": {"sheet": sheet.number, "at": list(spot.at)},
+        })
+    view = {
+        "id": sheet.number, "number": sheet.number, "file": drawing.relative_to(root).as_posix(),
+        "discipline": "arch", "kind": "special_plan", "title": sheet.title, "layout": "Model",
+        "units_to_mm": factor, "bounds": list(sheet.bounds), "levels": [],
+    }
+    if sheet.scale:
+        view["scale"] = sheet.scale
+    plan = {"sheets": [view], "levels": [], "grids": [], "elements": [], "relations": [], "issues": issues}
+    return (plan, transform), None
+
+
 def run_building(input_path: Path) -> dict:
     """Use the unique standard floor as the plan and datum reference."""
     from tumo_engine.recognize.building import merge_building_models
-    from tumo_engine.recognize.plan_registration import register_plan
 
     path = Path(input_path).resolve()
     drawing = input_drawing(path)
@@ -86,16 +118,24 @@ def run_building(input_path: Path) -> dict:
     anchor = recognize(seed, seed_items, repeat_standard_floors=True)
     aligned = []
     notices = []
+    roof_notices = []
     for sheet in plans:
         if sheet is seed:
             continue
         caption = f"{sheet.number} {sheet.title}"
+        items = spatial.nearby(box(*sheet.bounds), 0)
+        if sheet_kind(sheet.title) == "special_plan" and is_roof_zone_plan(sheet.title):
+            review, note = _roof_review_plan(sheet, items, rules, drawing, root, factor, anchor["grids"])
+            if review is not None:
+                aligned.append(review)
+            else:
+                roof_notices.append(note)
+            continue
         levels = _verified_level_pair(sheet.title, schedule)
         if levels is None:
             notices.append(f"{caption}：未找到唯一的本层与顶部建筑标高，保留单图核对。")
             continue
 
-        items = spatial.nearby(box(*sheet.bounds), 0)
         local_rows, local_warnings = _level_schedule(items, "arch", rules)
         local = {row.id: row for row in local_rows}
         if local_warnings or any(level["id"] in local and (
@@ -114,4 +154,7 @@ def run_building(input_path: Path) -> dict:
     for message in [*notices, *merge_warnings]:
         model["issues"].append({"id": _stable_id("I", seed.number, message), "severity": "warn",
                                 "message": message, "where": {"sheet": seed.number}})
+    for message in roof_notices:
+        model["issues"].append({"id": _stable_id("I", seed.number, message), "severity": "warn",
+                                "message": message})
     return model

@@ -64,3 +64,68 @@ def test_building_skips_floor_with_conflicting_grid_positions(tmp_path):
 
     assert len(model["sheets"]) == 1
     assert any("A101" in issue["message"] and "轴" in issue["message"] for issue in model["issues"])
+
+
+def _spot_symbol(doc, space, anchor, elevation, qualifier=None, *, rotation=0, left_leader=False):
+    block = doc.blocks.new("Spot" + elevation)
+    baseline = ((-780, 300), (300, 300)) if left_leader else ((-300, 300), (780, 300))
+    for start, end in (
+        ((0, 0), (-300, 300)), ((0, 0), (300, 300)), baseline,
+    ):
+        block.add_line(start, end, dxfattribs={"layer": "AD-LEVL-HIGH"})
+    text_x = -780.1 if left_leader else 100
+    text = block.add_text(elevation, dxfattribs={"insert": (text_x, 405), "layer": "AD-NOTE-CRCY"})
+    if qualifier:
+        block.add_text(qualifier, dxfattribs={"insert": (960, 405), "layer": "AD-NOTE-CRCY"})
+    insert = space.add_blockref(block.name, anchor, dxfattribs={"rotation": rotation})
+    return insert.dxf.handle, text.dxf.handle
+
+
+def test_aligned_roof_spots_keep_source_sheet_without_assigning_walls_to_a_level(tmp_path):
+    drawing = tmp_path / "建筑平面图.dxf"
+    doc = ezdxf.new(units=4)
+    space = doc.modelspace()
+    _frame(space, "三至四层平面图", "A103", 20000)
+    _frame(space, "机房层平面图", "A104", 40000)
+    _frame(space, "屋顶层平面图", "A105", 60000)
+    floor = _spot_symbol(doc, space, (2000, 42300), "75.600")
+    parapet = _spot_symbol(doc, space, (4200, 43100), "74.500", "女儿墙")
+    rotated = _spot_symbol(doc, space, (1800, 63000), "78.100", rotation=30, left_leader=True)
+    space.add_text("79.000", dxfattribs={"insert": (4200, 62200), "layer": "AD-NOTE-CRCY"})
+    doc.saveas(drawing)
+
+    model = run_building(drawing)
+
+    TumoModel.model_validate(model)
+    assert {"A104", "A105"} <= {sheet["id"] for sheet in model["sheets"] if not sheet["levels"]}
+    assert {item["source"]["sheet"] for item in model["elements"]} == {"A103"}
+    assert {level["id"] for level in model["levels"]} == {"L3", "L4", "L5"}
+    expected = [("A104", [2000, 42300], "局部标高 75600 mm", floor),
+                ("A104", [4200, 43100], "女儿墙顶标高 74500 mm", parapet),
+                ("A105", [1800, 63000], "局部标高 78100 mm", rotated)]
+    roof_issues = [issue for issue in model["issues"] if issue["where"]["sheet"] in {"A104", "A105"}]
+    assert len(roof_issues) == len(expected)
+    for sheet, point, label, handles in expected:
+        assert any(issue["where"] == {"sheet": sheet, "at": point} and label in issue["message"]
+                   and "/".join(handles) in issue["message"] for issue in roof_issues)
+    assert next(sheet for sheet in model["sheets"] if sheet["id"] == "A105")["transform"] == {
+        "dx": 0, "dy": -40000, "rot_deg": 0,
+    }
+
+
+def test_roof_spots_stay_out_of_model_when_axes_do_not_register(tmp_path):
+    drawing = tmp_path / "建筑平面图.dxf"
+    doc = ezdxf.new(units=4)
+    space = doc.modelspace()
+    _frame(space, "三至四层平面图", "A103", 20000)
+    _frame(space, "机房层平面图", "A104", 40000, grid_shift=600)
+    _spot_symbol(doc, space, (1800, 43000), "75.550")
+    doc.saveas(drawing)
+
+    model = run_building(drawing)
+
+    TumoModel.model_validate(model)
+    assert [sheet["id"] for sheet in model["sheets"]] == ["A103"]
+    [roof_warning] = [issue for issue in model["issues"] if "A104" in issue["message"]]
+    assert "轴段" in roof_warning["message"]
+    assert "where" not in roof_warning

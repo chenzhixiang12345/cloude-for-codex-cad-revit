@@ -42,6 +42,17 @@ wall:
 level:
   default_height: 3000
   row_tolerance: 180
+roof_zone:
+  arrow_layers: 'AD[-_]LEVL[-_]HIGH'
+  label_layers: 'AD[-_]NOTE[-_]CRCY'
+  # A signed three-decimal number on this symbol expresses metres.
+  metre_pattern: '([+−-]?\d{1,3}\.\d{3}|±0\.000)'
+  endpoint_tolerance: 1
+  half_width: [40, 1200]
+  arm_proportion_tolerance: 0.15
+  label_height_ratio: 0.75
+  qualifier_distance_ratio: 4
+  qualifier_row_tolerance: 10
 room:
   area_layer: AD-AREA-USNO
   area_pair_distance: 450
