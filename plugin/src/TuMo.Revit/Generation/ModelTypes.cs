@@ -33,7 +33,7 @@ internal sealed class ModelTypes
         foreach (var source in elements)
         {
             var data = source.Type ?? throw new InvalidOperationException($"构件 {source.Id} 缺少类型。");
-            if (source.Category == "wall" && !walls.ContainsKey(WallKey(data)))
+            if (source.Category is ("wall" or "shear_wall") && !walls.ContainsKey(WallKey(data)))
                 walls.Add(WallKey(data), ResolveWall(data, wallTypes));
             if (source.Category == "column" && !columns.ContainsKey(ColumnKey(data)))
                 columns.Add(ColumnKey(data), ResolveColumn(data, columnTypes));

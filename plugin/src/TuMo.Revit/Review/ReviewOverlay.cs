@@ -30,6 +30,7 @@ internal static class ReviewOverlay
         new Dictionary<string, (string, byte, byte, byte, int)>(StringComparer.Ordinal)
         {
             ["wall"] = ("墙", 8, 120, 105, 3),
+            ["shear_wall"] = ("剪力墙", 21, 94, 117, 4),
             ["column"] = ("柱", 154, 52, 18, 3),
             ["door"] = ("门", 124, 58, 237, 4),
             ["window"] = ("窗", 2, 132, 199, 4),
@@ -52,7 +53,7 @@ internal static class ReviewOverlay
         bool OnSelectedSheet(DrawingSource? source) => (source?.Sheet ?? defaultSheetId) == sheet.Id;
         var copies = new HashSet<string>(model.Elements.Where(IsStandardFloorCopy).Select(element => element.Id), StringComparer.Ordinal);
         var elements = model.Elements.Where(element => OnSelectedSheet(element.Source) && !copies.Contains(element.Id)).ToArray();
-        var hosts = elements.Where(element => element.Category == "wall").GroupBy(element => element.Id)
+        var hosts = elements.Where(element => element.Category is "wall" or "shear_wall").GroupBy(element => element.Id)
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
 
         var grids = 0;
@@ -138,7 +139,7 @@ internal static class ReviewOverlay
         var mark = element.Category switch
         {
             "room" => element.Type?.Name,
-            "door" or "window" or "wall_opening" => element.Type?.Mark,
+            "door" or "window" or "wall_opening" or "shear_wall" => element.Type?.Mark,
             _ => null,
         };
         if (string.IsNullOrWhiteSpace(mark) || mark == element.Id)

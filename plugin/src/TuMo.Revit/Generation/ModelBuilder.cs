@@ -13,7 +13,7 @@ internal static class ModelBuilder
 {
     public static string Build(Document document, TuMoModel model, RunLog log)
     {
-        var candidates = model.Elements.Where(e => e.Category is "column" or "wall").ToArray();
+        var candidates = model.Elements.Where(e => e.Category is "column" or "wall" or "shear_wall").ToArray();
         var openings = model.Elements.Where(e => e.Category is "door" or "window" or "wall_opening").ToArray();
         var interiors = model.Elements.Where(e => e.Category is "room" or "slab" or "slab_opening").ToArray();
         var beams = model.Elements.Where(e => e.Category == "beam").ToArray();
@@ -69,8 +69,10 @@ internal static class ModelBuilder
             var beamReport = CreateBeams(document, model, beams, created, levels, sheets, ids, log);
             if (transaction.Commit() != TransactionStatus.Committed)
                 throw new InvalidOperationException("Revit 无法提交模型。请查看日志。");
+            var shearWalls = candidates.Count(e => e.Category == "shear_wall");
+            var shearWallReport = shearWalls > 0 ? $"\n剪力墙 {shearWalls}。" : "";
             return $"标高 {levels.Count}，轴网 {model.Grids.Length}，柱 {candidates.Count(e => e.Category == "column")}，墙 {candidates.Count(e => e.Category == "wall")}。"
-                + openingReport + interiorReport + beamReport + (originNotice == null ? "" : $"\n{originNotice}");
+                + shearWallReport + openingReport + interiorReport + beamReport + (originNotice == null ? "" : $"\n{originNotice}");
         }
         catch
         {
@@ -377,6 +379,8 @@ internal static class ModelBuilder
 
     private static Extent GetExtent(ModelElement source, Dictionary<string, Level> levels, Level defaultBase)
     {
+        if (source.Category == "shear_wall" && (source.BaseLevel == null || source.TopLevel == null))
+            throw new InvalidOperationException($"剪力墙 {source.Id} 需要明确的底部和顶部标高。请查看疑点报告。");
         var baseLevel = source.BaseLevel == null ? defaultBase : levels[source.BaseLevel];
         var topLevel = source.TopLevel == null ? null : levels[source.TopLevel];
         var baseOffset = RevitApi.Feet(source.BaseOffset ?? 0);
@@ -419,8 +423,11 @@ internal static class ModelBuilder
             throw new InvalidOperationException($"墙 {source.Id} 需要线几何。");
         var line = Line.CreateBound(Point(geometry.Start, extent.Elevation, model, transform),
             Point(geometry.End, extent.Elevation, model, transform));
+        var isShearWall = source.Category == "shear_wall";
         var wall = Autodesk.Revit.DB.Wall.Create(document, line, type.Id, extent.Base.Id, extent.Height,
-            extent.BaseOffset, false, false);
+            extent.BaseOffset, false, isShearWall);
+        if (isShearWall)
+            wall.StructuralUsage = StructuralWallUsage.Shear;
         if (extent.Top != null)
         {
             Set(wall, BuiltInParameter.WALL_HEIGHT_TYPE, extent.Top.Id);

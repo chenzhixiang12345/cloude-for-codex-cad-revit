@@ -59,6 +59,8 @@ internal static class ReviewView
             $"CAD 原点 {origin}，X 方向 {axisX}，Y 方向 {axisY}。");
         var overlay = ReviewOverlay.Draw(document, view, model, sheet, Point, log);
         var summary = $"轴网 {overlay.Grids}，柱 {overlay.Count("column")}，墙 {overlay.Count("wall")}，带位置的疑点 {overlay.LocatedIssues}。";
+        if (overlay.Count("shear_wall") > 0)
+            summary += $"\n剪力墙 {overlay.Count("shear_wall")}。";
         if (new[] { "door", "window", "wall_opening", "room", "slab", "slab_opening", "ramp" }.Any(category => overlay.Count(category) > 0))
         {
             summary += $"\n门 {overlay.Count("door")}，窗 {overlay.Count("window")}，墙洞 {overlay.Count("wall_opening")}，" +
