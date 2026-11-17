@@ -1,6 +1,6 @@
 """Identify one architectural or structural plan and produce a TuMo model."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 from hashlib import blake2s
 import json
 import math
@@ -15,9 +15,15 @@ from tumo_engine.recognize.column import recognize_columns
 from tumo_engine.recognize.geometry import rounded
 from tumo_engine.recognize.grid import recognize_grids
 from tumo_engine.recognize.level import recognize_levels
+from tumo_engine.recognize.opening import recognize_openings
 from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_areas
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
+from tumo_engine.tables import read_opening_schedule
+
+
+_OPENING_TABLE = re.compile(r"门窗(?:表|详图|大样)|(?:门|窗)表|(?:door|window)[-_ ]*schedule", re.I)
+_OPENING_PREFIX = {"door": "D", "window": "WIN", "wall_opening": "WO"}
 
 
 def _stable_id(prefix, *values):
@@ -44,6 +50,70 @@ def _origin(grids):
             if not intersection.is_empty and intersection.geom_type == "Point":
                 return {"grid": [x["label"], y["label"]], "at": rounded(intersection.coords[0])}
     return {}
+
+
+def _opening_schedules(drawing, root, inline_items, issue):
+    inline_rows = read_opening_schedule(inline_items)
+    tables = [(drawing.relative_to(root).as_posix(), inline_rows)]
+    for path in sorted(drawing.parent.iterdir()):
+        if (path == drawing or path.suffix.lower() != ".dxf" or not path.is_file()
+                or not _OPENING_TABLE.search(path.stem) or not path.resolve().is_relative_to(root)):
+            continue
+        try:
+            doc = read_dxf(path)
+        except ValueError as error:
+            issue(str(error))
+            continue
+        warnings = bind_xrefs(doc, path, root)
+        items, parsing_warnings = primitives(doc, unit_factor(doc))
+        relative = path.relative_to(root).as_posix()
+        for warning in dict.fromkeys([*warnings, *parsing_warnings]):
+            issue(f"门窗表 {relative}：{warning}")
+        tables.append((relative, read_opening_schedule(items)))
+
+    rows = []
+    evidence = defaultdict(list)
+    for relative, table in tables:
+        for row in table:
+            rows.append(row)
+            trace = f"schedule_row:{relative}:" + ",".join(row.handles)
+            if trace not in evidence[row.mark]:
+                evidence[row.mark].append(trace)
+    inline_handles = {handle for row in inline_rows for handle in row.handles}
+    return rows, evidence, inline_handles
+
+
+def _add_openings(model, items, sheet_items, drawing, root, issue):
+    schedule, evidence, inline_handles = _opening_schedules(drawing, root, sheet_items, issue)
+    if not schedule:
+        return
+    hosts = {wall["id"]: wall for wall in model["elements"] if wall["category"] == "wall"}
+    plan_items = (
+        item for item in items
+        if item.kind != "text" or not item.handles or not set(item.handles) <= inline_handles
+    )
+    candidates, issues = recognize_openings(plan_items, hosts.values(), schedule)
+    for entry in issues:
+        issue(entry["message"], at=entry["at"])
+
+    sheet = model["sheets"][0]
+    for candidate in candidates:
+        at = candidate["geometry"]["at"]
+        host = hosts[candidate["host"]]
+        mark = candidate["type"]["mark"]
+        category = candidate["category"]
+        candidate.update({
+            "id": _stable_id(_OPENING_PREFIX[category], sheet["id"], host["id"], at),
+            "discipline": sheet["discipline"],
+            "base_level": host["base_level"],
+            "source": {"sheet": sheet["id"], "handles": candidate.pop("handles")},
+        })
+        candidate["evidence"].extend(evidence[mark])
+        model["elements"].append(candidate)
+        if category == "window" and "sill_height" not in candidate:
+            issue(f"{mark} 缺少窗台高度。请对照立面或剖面。", candidate["id"], at)
+        else:
+            issue(f"请核对 {mark} 的尺寸和宿主墙。", candidate["id"], at)
 
 
 def run(input_path: Path, bounds: Bounds | None = None) -> dict:
@@ -182,6 +252,8 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
                 {"kind": "join", "a": element["id"], "b": identifier, "priority": "column_cuts_wall"}
                 for identifier in sorted({column["id"] for column in joined if "id" in column})
             )
+    if subject == "arch":
+        _add_openings(model, items, level_items, drawing, root, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
         if count == 0 and (category != "墙" or subject != "struct"):
             issue(f"当前图纸范围内没有识别到{category}。")
