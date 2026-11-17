@@ -118,3 +118,22 @@ structural_slab:
   outline_tolerance: 0.01
   overlap_tolerance_area: 1.0
   pattern_digits: 6
+column_schedule:
+  frame_pattern: '(?:FRAME|THAPE|BORDER|内框|图框)'
+  title_tags: ['内框名称', '图名']
+  title_pattern: '(?:.*(?:墙柱柱?表|柱截面表|柱表))'
+  sheet_number: 'S\d{3,5}'
+  layers:
+    sheet: '^(?:C[-_]SHET[-_]SHET|内框)$'
+    table: '^TAB$'
+    text: '^TAB[-_]TEXT$'
+    profile: '^(?:WCOL|COLU)[-_]DE$'
+    dimension: '^(?:WCOL|COLU)[-_]DE[-_]DIM$'
+  headings: ['箍筋', '纵筋', '标高', '编号', '截面']
+  marks:
+    wall_boundary_component: '(?:GBZ|YBZ|AZ|DZ)\d+[A-Z]*'
+    column: '(?:KZ|GZ|Z)\d+[A-Z]*'
+  floor_pattern: '[一二三四五六七八九十百零0-9首地上下一层机房屋面架空商业A-Z() ~至—–-]+'
+  coordinate_tolerance: 2
+  display_tolerance: 1
+  size_range: [100, 5000]
