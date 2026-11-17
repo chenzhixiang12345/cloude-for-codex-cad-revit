@@ -57,7 +57,7 @@ def entity_visible(entity, hidden_layers, *, effective_layer=None):
     return entity.dxftype() not in {"ATTRIB", "ATTDEF"} or not entity.is_invisible
 
 
-def unit_factor(doc):
+def unit_factor(doc, *, bounds=None, dimension_layers=None):
     """Prefer declared units. Infer a unanimous scale only for unitless DXF."""
     if doc.units:
         try:
@@ -66,6 +66,10 @@ def unit_factor(doc):
             return 1.0
     hidden_layers = hidden_layer_names(doc)
     ratios = []
+    if bounds is not None and dimension_layers is not None:
+        local = _local_dimension_scale(doc, hidden_layers, bounds, dimension_layers)
+        if local is not None:
+            return local
     for dim in doc.modelspace().query("DIMENSION"):
         if dim.dimtype not in (0, 1) or not entity_visible(dim, hidden_layers):
             continue
@@ -77,11 +81,46 @@ def unit_factor(doc):
             ratio = float(text) / measurement
             if ratio > 0 and isfinite(ratio):
                 ratios.append(ratio)
+    return _agreed_scale(ratios) or 1.0
+
+
+def _agreed_scale(ratios):
     if len(ratios) >= 3:
         center = median(ratios)
         if sum(abs(ratio / center - 1) <= 0.02 for ratio in ratios) >= 0.8 * len(ratios):
             return center
-    return 1.0
+    return None
+
+
+def _local_dimension_scale(doc, hidden_layers, bounds, dimension_layers):
+    """Compare the rendered dimension number and its scale to its witness geometry."""
+    pattern = re.compile(dimension_layers)
+    x0, y0, x1, y1 = bounds
+    ratios = []
+    for dim in doc.modelspace().query("DIMENSION"):
+        if (dim.dimtype not in (0, 1) or not entity_visible(dim, hidden_layers)
+                or not pattern.fullmatch(layer_key(dim.dxf.layer))):
+            continue
+        first, second = dim.dxf.get("defpoint2"), dim.dxf.get("defpoint3")
+        if first is None or second is None or not all(x0 <= p.x <= x1 and y0 <= p.y <= y1 for p in (first, second)):
+            continue
+        try:
+            measurement = dim.get_measurement()
+            scale = dim.override().get("dimlfac", 1)
+            text = dim.dxf.text.strip()
+            if text in {"", "<>"}:
+                labels = [entity.plain_text().strip() for entity in dim.virtual_entities()
+                          if entity.dxftype() in {"TEXT", "MTEXT"}]
+                text = labels[0] if len(labels) == 1 else ""
+        except (ezdxf.DXFError, AttributeError, ArithmeticError, ValueError):
+            continue
+        if (not isinstance(measurement, (int, float)) or not isfinite(measurement) or measurement <= 0
+                or not isinstance(scale, (int, float)) or not isfinite(scale) or scale <= 0
+                or not re.fullmatch(r"\d+(?:\.\d+)?", text)):
+            continue
+        if abs(float(text) - measurement * scale) <= max(1, measurement * scale * 0.002):
+            ratios.append(scale)
+    return _agreed_scale(ratios)
 
 
 def point(vector, factor):

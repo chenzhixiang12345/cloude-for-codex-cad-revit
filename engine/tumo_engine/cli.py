@@ -145,8 +145,8 @@ def _run(args):
     if structural_slab and not args.merge_floors:
         raise ValueError("合并结构板图时需要同时指定 --merge-floors。")
     if args.merge_floors:
-        if bounds is not None:
-            raise ValueError("合并楼层需要读取完整 DXF，不能同时指定单张图的范围。")
+        if bounds is not None or args.sheet is not None:
+            raise ValueError("合并楼层需要读取完整 DXF，不能同时指定单张图的范围或图号。")
         from tumo_engine.building_pipeline import run_building
 
         result = run_building(source)
@@ -173,7 +173,7 @@ def _run(args):
             result = merge_structural_slabs(rebase(result, source_root), rebase(structural, structural_file.parent))
             source_root = combined_root
     else:
-        result = run(source, bounds=bounds, repeat_standard_floors=args.repeat_standard_floors)
+        result = run(source, bounds=bounds, repeat_standard_floors=args.repeat_standard_floors, sheet_number=args.sheet)
     model = TumoModel.model_validate(result)
     model = model.model_dump(mode="json", exclude_unset=True)
     output.mkdir(parents=True, exist_ok=True)
@@ -247,6 +247,7 @@ def main(argv=None):
     run.add_argument("input", type=Path)
     run.add_argument("-o", "--output", type=Path)
     run.add_argument("--bounds", type=float, nargs=4, metavar=("XMIN", "YMIN", "XMAX", "YMAX"))
+    run.add_argument("--sheet", help="按原图号选定 DXF 内的一张图。")
     building_mode = run.add_mutually_exclusive_group()
     building_mode.add_argument("--repeat-standard-floors", action="store_true", help="按图名和明确的楼层表复用标准层。")
     building_mode.add_argument("--merge-floors", action="store_true", help="对齐同一 DXF 中建筑平面的标高和共有轴网。")

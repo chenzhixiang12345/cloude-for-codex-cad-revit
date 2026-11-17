@@ -453,7 +453,8 @@ def _plan_levels(items, title, discipline, rules, *, floor_number=None):
     return [base, top], rows, warnings
 
 
-def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floors: bool = False) -> dict:
+def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floors: bool = False,
+        sheet_number: str | None = None) -> dict:
     path = Path(input_path).resolve()
     drawing = input_drawing(path)
     root = path if path.is_dir() else path.parent
@@ -461,7 +462,14 @@ def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floor
     rules = defaults()
     factor = unit_factor(doc)
     detected = drawing_sheets(doc, drawing, factor, rules["layers"])
-    if bounds is not None:
+    if sheet_number is not None:
+        if bounds is not None:
+            raise ValueError("按图号选择时不能另指定范围。")
+        matching = [sheet for sheet in detected if sheet.number == sheet_number.strip().upper()]
+        if len(matching) != 1:
+            raise ValueError(f"找不到唯一图号 {sheet_number}。")
+        sheet_info = matching[0]
+    elif bounds is not None:
         if len(bounds) != 4 or not all(math.isfinite(value) for value in bounds) or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
             raise ValueError("图纸范围必须是递增的四个毫米坐标。")
         cx, cy = (bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2
@@ -470,6 +478,12 @@ def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floor
                            and sheet.bounds[1] <= cy <= sheet.bounds[3]), detected[0])
     else:
         sheet_info = detected[0]
+    if not doc.units and discipline(drawing) == "struct" and sheet_info.bounds and bounds is None:
+        raw_bounds = tuple(value / factor for value in sheet_info.bounds)
+        local_factor = unit_factor(doc, bounds=raw_bounds, dimension_layers=rules["layers"]["structural_dimension"])
+        if local_factor != factor:
+            factor = local_factor
+            sheet_info.bounds = tuple(round(value * factor, 5) for value in raw_bounds)
     if sheet_kind(sheet_info.title) == "unknown":
         number = sheet_info.number
         if number is None and (match := NUMBER.fullmatch(drawing.stem)):
