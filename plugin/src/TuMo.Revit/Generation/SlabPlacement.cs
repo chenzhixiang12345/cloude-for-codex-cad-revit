@@ -48,7 +48,9 @@ internal static class SlabPlacement
         var name = ModelTypes.AvailableName(label, types.Select(type => type.Name));
         var copy = (FloorType)template.Duplicate(name);
         var layer = new CompoundStructureLayer(thickness, MaterialFunctionAssignment.Structure, material);
-        copy.SetCompoundStructure(CompoundStructure.CreateSimpleCompoundStructure(new[] { layer }));
+        var structure = CompoundStructure.CreateSimpleCompoundStructure(new[] { layer });
+        structure.EndCap = EndCapCondition.NoEndCap;
+        copy.SetCompoundStructure(structure);
         return copy;
     }
 
