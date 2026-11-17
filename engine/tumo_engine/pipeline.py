@@ -12,7 +12,7 @@ from shapely.geometry import LineString, MultiPoint
 
 from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import Bounds, bind_xrefs, primitives, unit_factor
-from tumo_engine.recognize import structural_slabs
+from tumo_engine.recognize import structural_beams, structural_slabs
 from tumo_engine.recognize.column import recognize_columns
 from tumo_engine.recognize.elevation import read_elevation_drawing
 from tumo_engine.recognize.geometry import rounded
@@ -504,6 +504,8 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
     if subject == "unknown" and sheet_kind(sheet_info.title) == "floor_plan":
         subject = "arch"
     slab_span = slab_top_floor_span(sheet_info.title) if subject == "struct" else None
+    beam_span = structural_beams.beam_top_floor_span(sheet_info.title, rules) if subject == "struct" else None
+    structural_span = slab_span or beam_span
     sheet_id = sheet_info.number or _stable_id("S", relative, sheet_info.title)
     model = {
         "schema_version": "0.1",
@@ -548,7 +550,7 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
     if sheet_info.bounds is not None and sheet_info.bounds != bounds:
         level_items, _ = primitives(doc, factor, sheet_info.bounds)
     levels, level_rows, warnings = (_plan_levels(level_items, sheet_info.title, subject, rules,
-                                                 floor_number=slab_span[0] if slab_span else None)
+                                                 floor_number=structural_span[0] if structural_span else None)
                                     if verified_levels is None else (verified_levels, [], []))
     model["levels"] = levels
     sheet["levels"] = [level["id"] for level in levels]
@@ -582,7 +584,7 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
             scope = footprint.buffer(rules["grid"]["plan_margin"])
             items = [item for item in items if scope.intersects(item.shape)]
 
-    columns = [] if slab_span else recognize_columns(items, rules)
+    columns = [] if structural_span else recognize_columns(items, rules)
     walls = recognize_walls(items, columns, rules) if subject != "struct" else []
     if subject != "struct":
         for handle, at in unbuilt_structural_wall_areas(items, walls, columns, rules):
@@ -627,6 +629,13 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
     elif slab_span:
         _add_structural_slabs(model, doc, level_items, bounds, level_rows, rules, issue)
         _use_structural_datum(levels)
+    elif beam_span:
+        beams, warnings = structural_beams.recognize_structural_beams(
+            doc, level_items, sheet_id=sheet_id, title=sheet_info.title, floor=beam_span[0], rules=rules,
+        )
+        model["elements"].extend(beams)
+        model["issues"].extend(warnings)
+        _use_structural_datum(levels)
     if repeat_standard_floors:
         expanded, repeat_warnings = expand_standard_floors(
             model, sheet_info.title, level_rows, floor_span=slab_span if slab_span and slab_span[0] < slab_span[1] else None,
@@ -642,6 +651,6 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
     if subject == "arch":
         _apply_window_sills(model, details, sills, sill_conflicts, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
-        if count == 0 and (category != "墙" or subject != "struct") and (category != "柱" or not slab_span):
+        if count == 0 and (category != "墙" or subject != "struct") and (category != "柱" or not structural_span):
             issue(f"当前图纸范围内没有识别到{category}。")
     return model

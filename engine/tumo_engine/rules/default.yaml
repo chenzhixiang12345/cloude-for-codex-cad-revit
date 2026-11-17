@@ -159,3 +159,12 @@ column_schedule:
   coordinate_tolerance: 2
   display_tolerance: 1
   size_range: [100, 5000]
+structural_beam:
+  top_title_token: '顶梁(?=平法施工图$)'
+  reference_layer: 'S[-_]PLAN[-_]TEXT'
+  reference_pattern: '相对标高\s*(?:均)?\s*为?\s*相对于\s*本层结构层高表中的标高'
+  conflicting_reference_pattern: '相对标高[^。；]{0,40}(?:建筑标高|建筑层高表)'
+  offset_pattern: '\(\s*(?P<value>[+-]\d{1,2}\.\d{3})\s*\)'
+  section_alignment: 20
+  next_row_distance: [220, 280]
+  angle_deg: 0.1
