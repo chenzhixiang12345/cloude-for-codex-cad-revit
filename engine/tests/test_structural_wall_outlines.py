@@ -140,6 +140,26 @@ def test_shared_block_insert_is_not_proof_of_the_same_wall_outline(tmp_path):
     }
 
 
+def test_substitution_does_not_drop_an_existing_wall_to_column_join(tmp_path):
+    doc = ezdxf.new(units=4)
+    points = [(0, 0), (900, 0), (900, 300), (660, 300), (660, 200),
+              (240, 200), (240, 300), (0, 300)]
+    plan = doc.modelspace()
+    plan.add_lwpolyline(points, close=True, dxfattribs={"layer": "AE-WALL"})
+    plan.add_lwpolyline([(220, 100), (420, 100), (420, 300), (220, 300)], close=True,
+                        dxfattribs={"layer": "COLUMN"})
+    path = tmp_path / "三层平面图.dxf"
+    doc.saveas(path)
+
+    model = run(path)
+    walls = [wall for wall in model["elements"] if wall["category"] == "wall"]
+
+    assert len(walls) == 2
+    short = next(wall for wall in walls if wall["geometry"]["start"] == [240, 100])
+    [join] = model["relations"]
+    assert (join["kind"], join["a"]) == ("join", short["id"])
+
+
 def test_marks_unverified_stepped_wall_without_guessing_its_build(tmp_path):
     doc = ezdxf.new(units=4)
     points = [(0, 0), (700, 0), (700, 950), (300, 950), (300, 1250), (0, 1250)]
