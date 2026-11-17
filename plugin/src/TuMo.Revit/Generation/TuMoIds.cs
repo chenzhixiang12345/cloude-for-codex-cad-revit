@@ -24,7 +24,8 @@ internal sealed class TuMoIds
         var categories = application.Create.NewCategorySet();
         foreach (var key in new[] { BuiltInCategory.OST_Levels, BuiltInCategory.OST_Grids,
                      BuiltInCategory.OST_Walls, BuiltInCategory.OST_StructuralColumns,
-                     BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows, BuiltInCategory.OST_Rooms, BuiltInCategory.OST_Floors })
+                     BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows, BuiltInCategory.OST_Rooms, BuiltInCategory.OST_Floors,
+                     BuiltInCategory.OST_StructuralFraming })
         {
             var category = document.Settings.Categories.get_Item(key);
             if (category.AllowsBoundParameters)

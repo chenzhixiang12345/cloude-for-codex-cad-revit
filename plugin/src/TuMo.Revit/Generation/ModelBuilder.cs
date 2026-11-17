@@ -16,10 +16,11 @@ internal static class ModelBuilder
         var candidates = model.Elements.Where(e => e.Category is "column" or "wall").ToArray();
         var openings = model.Elements.Where(e => e.Category is "door" or "window" or "wall_opening").ToArray();
         var interiors = model.Elements.Where(e => e.Category is "room" or "slab" or "slab_opening").ToArray();
-        if (model.Grids.Length == 0 && candidates.Length == 0 && interiors.Length == 0)
+        var beams = model.Elements.Where(e => e.Category == "beam").ToArray();
+        if (model.Grids.Length == 0 && candidates.Length == 0 && interiors.Length == 0 && beams.Length == 0)
             throw new InvalidOperationException("这张图没有识别出可生成的构件。请查看疑点报告。");
 
-        RejectCollisions(document, candidates.Concat(openings).Concat(interiors));
+        RejectCollisions(document, candidates.Concat(openings).Concat(interiors).Concat(beams));
         var sheets = model.Sheets.ToDictionary(s => s.Id, StringComparer.Ordinal);
         using var transaction = new Transaction(document, "TuMo 生成模型");
         transaction.Start();
@@ -65,10 +66,11 @@ internal static class ModelBuilder
             JoinGeometry.Connect(document, created, model.Relations, log);
             var openingReport = CreateOpenings(document, model, openings, created, levels, dimensions, sheets, ids, log);
             var interiorReport = CreateRoomsAndSlabs(document, model, interiors, created, levels, sheets, ids, log);
+            var beamReport = CreateBeams(document, model, beams, created, levels, sheets, ids, log);
             if (transaction.Commit() != TransactionStatus.Committed)
                 throw new InvalidOperationException("Revit 无法提交模型。请查看日志。");
             return $"标高 {levels.Count}，轴网 {model.Grids.Length}，柱 {candidates.Count(e => e.Category == "column")}，墙 {candidates.Count(e => e.Category == "wall")}。"
-                + openingReport + interiorReport + (originNotice == null ? "" : $"\n{originNotice}");
+                + openingReport + interiorReport + beamReport + (originNotice == null ? "" : $"\n{originNotice}");
         }
         catch
         {
@@ -76,6 +78,57 @@ internal static class ModelBuilder
                 transaction.RollBack();
             throw;
         }
+    }
+
+    private static string CreateBeams(Document document, TuMoModel model, ModelElement[] beams,
+        Dictionary<string, Element> created, Dictionary<string, Level> levels, Dictionary<string, Sheet> sheets,
+        TuMoIds ids, RunLog log)
+    {
+        if (beams.Length == 0)
+            return "";
+        var builder = new BeamPlacement(document, log);
+        var placed = 0;
+        foreach (var source in beams)
+        {
+            using var change = new SubTransaction(document);
+            if (change.Start() != TransactionStatus.Started)
+                throw new InvalidOperationException("不能开始结构梁子事务。");
+            try
+            {
+                if (created.ContainsKey(source.Id))
+                    throw new InvalidOperationException("TuMo 编号重复。");
+                if (source.BaseLevel == null || !levels.TryGetValue(source.BaseLevel, out var level))
+                    throw new InvalidOperationException("梁缺少项目中的楼层标高。");
+                if (source.BaseOffset is not { } offset || double.IsNaN(offset) || double.IsInfinity(offset))
+                    throw new InvalidOperationException("梁缺少明确的相对梁顶标高。");
+                if (source.Geometry is not { Kind: "line" } geometry)
+                    throw new InvalidOperationException("梁需要直线几何。");
+                var transform = TransformFor(source.Source, sheets);
+                var elevation = level.ProjectElevation + RevitApi.Feet(offset);
+                var a = Point(geometry.Start, elevation, model, transform);
+                var b = Point(geometry.End, elevation, model, transform);
+                if (a.DistanceTo(b) <= document.Application.ShortCurveTolerance)
+                    throw new InvalidOperationException("梁的长度低于 Revit 最小曲线长度。");
+                var result = builder.Create(source, level, Line.CreateBound(a, b));
+                SetMark(result, source.Type?.Mark);
+                ids.Set(result, source.Id);
+                if (change.Commit() != TransactionStatus.Committed)
+                    throw new InvalidOperationException("Revit 未能提交结构梁。");
+                created.Add(source.Id, result);
+                placed++;
+                log.Write($"生成 {source.Id}，Revit ID {RevitApi.IdValue(result.Id)}。");
+            }
+            catch (Exception error) when (ModelOpenings.CanSkip(error))
+            {
+                log.Write($"跳过梁 {source.Id}：{error.Message}");
+            }
+            finally
+            {
+                if (change.GetStatus() == TransactionStatus.Started)
+                    change.RollBack();
+            }
+        }
+        return $"梁 {placed}，跳过 {beams.Length - placed}。";
     }
 
     private static string CreateOpenings(Document document, TuMoModel model, ModelElement[] openings,
@@ -239,7 +292,8 @@ internal static class ModelBuilder
         if (ids.Count == 0)
             return;
         var categories = new[] { BuiltInCategory.OST_Walls, BuiltInCategory.OST_StructuralColumns,
-            BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows, BuiltInCategory.OST_Rooms, BuiltInCategory.OST_Floors };
+            BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows, BuiltInCategory.OST_Rooms, BuiltInCategory.OST_Floors,
+            BuiltInCategory.OST_StructuralFraming };
         var existing = new FilteredElementCollector(document).WhereElementIsNotElementType()
             .WherePasses(new LogicalOrFilter(new ElementMulticategoryFilter(categories), new ElementClassFilter(typeof(Opening))));
         foreach (var element in existing)

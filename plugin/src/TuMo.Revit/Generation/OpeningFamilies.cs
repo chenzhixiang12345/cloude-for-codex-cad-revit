@@ -42,7 +42,7 @@ internal sealed class OpeningFamilies
 
         if (!libraryFiles.TryGetValue(category, out var paths))
         {
-            paths = FindLocalFamilies(names);
+            paths = LocalFamilyLibrary.Find(document.Application, names, log);
             libraryFiles.Add(category, paths);
         }
 
@@ -88,7 +88,7 @@ internal sealed class OpeningFamilies
         var ordered = symbols.OrderByDescending(symbol =>
                 string.Equals(symbol.Name, requestedName, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(symbol.FamilyName, requestedName, StringComparison.OrdinalIgnoreCase))
-            .ThenBy(symbol => Preference(defaults, symbol.FamilyName))
+            .ThenBy(symbol => LocalFamilyLibrary.Preference(defaults, symbol.FamilyName))
             .ThenBy(symbol => symbol.FamilyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(symbol => symbol.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -147,45 +147,6 @@ internal sealed class OpeningFamilies
         }
     }
 
-    private string[] FindLocalFamilies(string[] names)
-    {
-        var application = document.Application;
-        var roots = new HashSet<string>(application.GetLibraryPaths().Values, StringComparer.OrdinalIgnoreCase)
-        {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Autodesk",
-                $"RVT {application.VersionNumber}", "Libraries")
-        };
-        if (Directory.Exists(application.FamilyTemplatePath))
-        {
-            for (var directory = new DirectoryInfo(application.FamilyTemplatePath); directory != null; directory = directory.Parent)
-            {
-                if (!directory.Name.Equals("Family Templates", StringComparison.OrdinalIgnoreCase) || directory.Parent == null)
-                    continue;
-                roots.Add(Path.Combine(directory.Parent.FullName, "Libraries"));
-                break;
-            }
-        }
-
-        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var root in roots.Where(Directory.Exists))
-        {
-            try
-            {
-                foreach (var path in Directory.EnumerateFiles(root, "*.rfa", SearchOption.AllDirectories))
-                {
-                    if (Preference(names, Path.GetFileNameWithoutExtension(path)) < names.Length)
-                        paths.Add(path);
-                }
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-            {
-                log.Write($"无法搜索 Revit 族库 {root}：{error.Message}");
-            }
-        }
-        return paths.OrderBy(path => Preference(names, Path.GetFileNameWithoutExtension(path)))
-            .ThenBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray();
-    }
-
     private static bool IsWallHosted(FamilySymbol symbol) =>
         symbol.Family.FamilyPlacementType == FamilyPlacementType.OneLevelBasedHosted;
 
@@ -214,9 +175,4 @@ internal sealed class OpeningFamilies
 
     private static string Millimeters(double feet) => (feet / RevitApi.Feet(1)).ToString("0.###", CultureInfo.InvariantCulture);
 
-    private static int Preference(string[] names, string filename)
-    {
-        var index = Array.FindIndex(names, name => string.Equals(name, filename, StringComparison.OrdinalIgnoreCase));
-        return index < 0 ? names.Length : index;
-    }
 }
