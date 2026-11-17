@@ -12,7 +12,7 @@ from shapely.geometry import LineString, MultiPoint
 
 from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import Bounds, bind_xrefs, primitives, unit_factor
-from tumo_engine.recognize import structural_beams, structural_columns, structural_slabs
+from tumo_engine.recognize import structural_beams, structural_columns, structural_shear_walls, structural_slabs
 from tumo_engine.recognize.column import recognize_columns
 from tumo_engine.recognize.elevation import read_elevation_drawing
 from tumo_engine.recognize.geometry import rounded
@@ -30,6 +30,7 @@ from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
 from tumo_engine.tables import OpeningScheduleRow, WallOpeningScheduleRow, read_opening_schedule
 from tumo_engine.tables import columns as column_tables
+from tumo_engine.tables import shear_walls as wall_tables
 from tumo_engine.tables.levels import read_level_schedule
 
 
@@ -404,37 +405,45 @@ def _use_structural_datum(levels):
             level.pop("elevation_arch", None)
 
 
-def _add_structural_columns(model, doc, items, level_rows, rules, issue, repeat):
+def _add_structural_walls_and_columns(model, doc, items, sheet_items, level_rows, rules, issue, repeat):
     sheet = model["sheets"][0]
     title = sheet["title"]
     span, _ = standard_floor_span(title)
     first = span[0] if span else floor_from_title(title.replace("墙柱", ""))
     if first is None:
-        issue("墙柱图没有明确楼层，暂不生成结构柱。")
+        issue("墙柱图没有明确楼层，暂不生成结构柱或剪力墙。")
         return
     last = span[1] if span and repeat else first
     rows = {row.number: row for row in level_rows if row.elevation_struct is not None}
     table_rows, _ = column_tables.read_column_schedules(doc, rules=rules)
+    wall_rows, table_warnings = wall_tables.read_shear_wall_schedule(sheet_items, sheet_id=sheet["id"], rules=rules)
+    for entry in table_warnings:
+        notice = f"{entry['mark']} {entry['message']}" if entry.get("mark") else entry["message"]
+        issue(notice, at=entry["at"])
     levels = {}
     for floor in range(first, last + 1):
         low, high = rows.get(floor), rows.get(1 if floor == -1 else floor + 1)
         if low is None or high is None or high.elevation_struct <= low.elevation_struct:
-            issue(f"{floor}F 缺少明确递增的结构柱起止标高。")
+            issue(f"{floor}F 缺少明确递增的结构柱或剪力墙起止标高。")
             continue
         for row in (low, high):
             level = row.to_level()
             level["evidence"] = ["level_schedule:" + ",".join(row.handles)]
             levels[row.id] = level
-        candidates, warnings = structural_columns.recognize_structural_columns(
+        columns, column_warnings = structural_columns.recognize_structural_columns(
             items, table_rows, plan_title=title, floor_number=floor, rules=rules,
         )
-        for message, at in warnings:
+        walls, wall_warnings = structural_shear_walls.recognize_structural_shear_walls(
+            items, wall_rows, floor_number=floor, legend_items=sheet_items, rules=rules,
+        )
+        for message, at in (*column_warnings, *wall_warnings):
             issue(f"{low.name} {message}", at=at)
-        for column, _ in candidates:
-            column.update({"id": _stable_id("C", sheet["id"], low.id, column["geometry"]),
-                           "discipline": "struct", "base_level": low.id, "top_level": high.id,
-                           "source": {"sheet": sheet["id"], "handles": column.pop("handles")}})
-            model["elements"].append(column)
+        for prefix, candidates in (("C", columns), ("SW", walls)):
+            for candidate, _ in candidates:
+                candidate.update({"id": _stable_id(prefix, sheet["id"], low.id, candidate["geometry"]),
+                                  "discipline": "struct", "base_level": low.id, "top_level": high.id,
+                                  "source": {"sheet": sheet["id"], "handles": candidate.pop("handles")}})
+                model["elements"].append(candidate)
     if levels:
         model["levels"] = list(levels.values())
         sheet["levels"] = list(levels)
@@ -676,7 +685,7 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
         model["issues"].extend(warnings)
         _use_structural_datum(levels)
     elif column_plan:
-        _add_structural_columns(model, doc, items, level_rows, rules, issue, repeat_standard_floors)
+        _add_structural_walls_and_columns(model, doc, items, level_items, level_rows, rules, issue, repeat_standard_floors)
     if repeat_standard_floors and not column_plan:
         expanded, repeat_warnings = expand_standard_floors(
             model, sheet_info.title, level_rows, floor_span=slab_span if slab_span and slab_span[0] < slab_span[1] else None,

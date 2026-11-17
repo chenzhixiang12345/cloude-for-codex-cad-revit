@@ -199,3 +199,19 @@ shear_wall_schedule:
   thickness_pattern: '([0-9]+(?:\.[0-9]+)?)\s*(?:MM|毫米)?'
   thickness_range: [100, 2000]
   coordinate_tolerance: 2
+structural_shear_wall:
+  layers:
+    label: 'S[-_]COLU[-_]TEXT'
+    legend: 'S[-_]PLAN[-_]TEXT'
+    wall: 'S[-_]WALL'
+    edge_outline: 'COLU[-_]OLIN'
+    edge_fill: 'COLU[-_]HATCH'
+    constraint: 'S[-_](?:WALL|COLU)[-_]H(?:ATCH|ACH)(?:[-_].*)?'
+    opening: '(?:S[-_])?(?:WALL[-_])?(?:HOLE|OPEN)(?:[-_].*)?'
+  mark_pattern: 'Q\d+[A-Z]*'
+  legend_pattern: '无填充[^。;]{0,80}表示(?:现浇)?墙体[^。;]{0,80}边缘构件范围'
+  label_distance: 12
+  outline_tolerance: 0.5
+  edge_probe: 2
+  angle_deg: 0.3
+  min_length: 300

@@ -1,9 +1,10 @@
 import ezdxf
 
+from tumo_engine import pipeline
 from tumo_engine.export.model import TumoModel
 from tumo_engine.pipeline import run
 from tumo_engine.recognize import structural_columns
-from tumo_engine.tables import columns
+from tumo_engine.tables import columns, shear_walls
 
 
 def test_structural_plan_publishes_each_floor_only_after_checking_its_column_table(tmp_path, monkeypatch):
@@ -29,12 +30,26 @@ def test_structural_plan_publishes_each_floor_only_after_checking_its_column_tab
                   "handles": ["CDE"], "evidence": ["column_schedule:S3010:ABC"]}, None)], []
 
     monkeypatch.setattr(structural_columns, "recognize_structural_columns", recognize)
+    monkeypatch.setattr(shear_walls, "read_shear_wall_schedule", lambda *a, **k: ([{"fixture": "shear"}], []))
+
+    def recognize_shear(items, table, *, floor_number, legend_items, rules):
+        assert table == [{"fixture": "shear"}] and legend_items
+        if floor_number == 3:
+            return [], [("Q2a 未确认。", [0, 300])]
+        return [({"category": "shear_wall", "type": {"mark": "Q2a", "thickness": 300},
+                  "geometry": {"kind": "line", "start": [0, 300], "end": [3900, 300]}, "confidence": .95,
+                  "handles": ["DEF"], "evidence": ["shear_wall_schedule:ABC"]}, None)], []
+
+    monkeypatch.setattr(pipeline.structural_shear_walls, "recognize_structural_shear_walls", recognize_shear)
 
     model = run(path, repeat_standard_floors=True)
 
     TumoModel.model_validate(model)
     assert checked == [3, 4]
-    [column] = model["elements"]
+    column, shear = model["elements"]
     assert (column["base_level"], column["top_level"], column["discipline"]) == ("L3", "L4", "struct")
+    assert (shear["base_level"], shear["top_level"], shear["discipline"]) == ("L4", "L5", "struct")
+    assert shear["source"]["handles"] == ["DEF"]
     assert [level["id"] for level in model["levels"]] == ["L3", "L4", "L5"]
     assert any("截面未确认" in issue["message"] for issue in model["issues"])
+    assert any("Q2a 未确认" in issue["message"] and issue["where"]["at"] == [0, 300] for issue in model["issues"])
