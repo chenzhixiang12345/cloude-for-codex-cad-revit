@@ -44,7 +44,8 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release R27'">
     <TargetFramework>net10.0-windows</TargetFramework>
-    <RevitApiVersion>2027.1.0</RevitApiVersion>
+    <!-- Compile against the initial Revit 2027 API. -->
+    <RevitApiVersion>2027.0.0</RevitApiVersion>
     <DefineConstants>$(DefineConstants);REVIT2027;REVIT2021_OR_GREATER;REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER;REVIT2025_OR_GREATER;REVIT2026_OR_GREATER;REVIT2027_OR_GREATER</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
