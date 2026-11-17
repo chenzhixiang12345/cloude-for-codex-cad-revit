@@ -9,11 +9,13 @@ using TuMo.Revit.Logging;
 
 namespace TuMo.Revit.Commands;
 
+internal enum FloorMode { Single, Standard, Building }
+
 internal static class EngineRunner
 {
     private const int TimeoutMilliseconds = 5 * 60 * 1000;
 
-    public static string Run(string input, RunLog log, bool repeatStandardFloors = false)
+    public static string Run(string input, RunLog log, FloorMode mode = FloorMode.Single)
     {
         var assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
         var executable = Path.Combine(assemblyDirectory, "tumo-engine.exe");
@@ -36,7 +38,12 @@ internal static class EngineRunner
         var startInfo = new ProcessStartInfo
         {
             FileName = executable,
-            Arguments = repeatStandardFloors ? "run job.json --repeat-standard-floors" : "run job.json",
+            Arguments = mode switch
+            {
+                FloorMode.Standard => "run job.json --repeat-standard-floors",
+                FloorMode.Building => "run job.json --merge-floors",
+                _ => "run job.json"
+            },
             WorkingDirectory = output,
             UseShellExecute = false,
             CreateNoWindow = true,

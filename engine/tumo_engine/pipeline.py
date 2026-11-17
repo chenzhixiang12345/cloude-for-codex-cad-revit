@@ -59,7 +59,14 @@ def _origin(grids):
     return {}
 
 
-def _opening_schedules(drawing, root, inline_items, issue):
+def _read_opening_companion(path, root):
+    doc = read_dxf(path)
+    warnings = bind_xrefs(doc, path, root)
+    items, parsing_warnings = primitives(doc, unit_factor(doc))
+    return read_opening_schedule(items), list(dict.fromkeys([*warnings, *parsing_warnings]))
+
+
+def _opening_schedules(drawing, root, inline_items, issue, read_companion):
     inline_rows = read_opening_schedule(inline_items)
     tables = [(drawing.relative_to(root).as_posix(), inline_rows)]
     for path in sorted(drawing.parent.iterdir()):
@@ -67,16 +74,14 @@ def _opening_schedules(drawing, root, inline_items, issue):
                 or not _OPENING_TABLE.search(path.stem) or not path.resolve().is_relative_to(root)):
             continue
         try:
-            doc = read_dxf(path)
+            rows, warnings = read_companion(path, root)
         except ValueError as error:
             issue(str(error))
             continue
-        warnings = bind_xrefs(doc, path, root)
-        items, parsing_warnings = primitives(doc, unit_factor(doc))
         relative = path.relative_to(root).as_posix()
-        for warning in dict.fromkeys([*warnings, *parsing_warnings]):
+        for warning in warnings:
             issue(f"门窗表 {relative}：{warning}")
-        tables.append((relative, read_opening_schedule(items)))
+        tables.append((relative, rows))
 
     rows = []
     evidence = defaultdict(list)
@@ -145,8 +150,8 @@ def _restore_opening_hosts(model, candidates, hosts, issue):
     return accepted
 
 
-def _add_openings(model, items, sheet_items, drawing, root, rules, issue):
-    schedule, evidence, inline_handles = _opening_schedules(drawing, root, sheet_items, issue)
+def _add_openings(model, items, sheet_items, drawing, root, rules, issue, read_companion):
+    schedule, evidence, inline_handles = _opening_schedules(drawing, root, sheet_items, issue, read_companion)
     if not schedule:
         return
     hosts = {wall["id"]: wall for wall in model["elements"] if wall["category"] == "wall"}
@@ -176,7 +181,7 @@ def _add_openings(model, items, sheet_items, drawing, root, rules, issue):
             issue(f"请核对 {mark} 的尺寸和宿主墙。", candidate["id"], at)
 
 
-def _apply_window_sills(model, drawing, root, issue):
+def _apply_window_sills(model, drawing, root, issue, read_elevations):
     windows = defaultdict(list)
     for element in model["elements"]:
         if element["category"] == "window":
@@ -191,7 +196,7 @@ def _apply_window_sills(model, drawing, root, issue):
                 or not _ELEVATION_DRAWING.search(path.stem) or not path.resolve().is_relative_to(root)):
             continue
         try:
-            annotations, warnings = read_elevation_drawing(path, root)
+            annotations, warnings = read_elevations(path, root)
         except ValueError as error:
             issue(str(error))
             continue
@@ -262,11 +267,14 @@ def _add_slabs(model, items, rules, issue):
         publish(opening, _stable_id("SO", host["id"], opening["geometry"]))
 
 
+def _level_schedule(items, discipline, rules):
+    return read_level_schedule(items, discipline=discipline, layer_pattern=rules["layers"]["level_table"],
+                               row_tolerance=rules["level"]["row_tolerance"])
+
+
 def _plan_levels(items, title, discipline, rules):
     config = rules["level"]
-    rows, warnings = read_level_schedule(items, discipline=discipline,
-                                         layer_pattern=rules["layers"]["level_table"],
-                                         row_tolerance=config["row_tolerance"])
+    rows, warnings = _level_schedule(items, discipline, rules)
     if not rows:
         levels, legacy_warnings = recognize_levels(items, title, discipline, rules)
         return levels, rows, warnings + legacy_warnings
@@ -313,7 +321,6 @@ def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floor
     path = Path(input_path).resolve()
     drawing = input_drawing(path)
     root = path if path.is_dir() else path.parent
-    relative = drawing.relative_to(root).as_posix()
     doc = read_dxf(drawing)
     rules = defaults()
     factor = unit_factor(doc)
@@ -334,11 +341,18 @@ def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floor
         if number and (title := catalog_title(drawing, root, number)):
             sheet_info.number = number
             sheet_info.title = title
+    return _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info,
+                           bounds=tuple(bounds) if bounds is not None else sheet_info.bounds,
+                           xref_warnings=bind_xrefs(doc, drawing, root), repeat_standard_floors=repeat_standard_floors)
 
+
+def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, bounds, xref_warnings,
+                    repeat_standard_floors=False, verified_levels=None, selected_items=None,
+                    read_companion=_read_opening_companion, read_elevations=read_elevation_drawing):
+    relative = drawing.relative_to(root).as_posix()
     subject = discipline(drawing)
     if subject == "unknown" and sheet_kind(sheet_info.title) == "floor_plan":
         subject = "arch"
-    chosen_bounds = tuple(bounds) if bounds is not None else sheet_info.bounds
     sheet_id = sheet_info.number or _stable_id("S", relative, sheet_info.title)
     model = {
         "schema_version": "0.1",
@@ -357,8 +371,8 @@ def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floor
         sheet["number"] = sheet_info.number
     if sheet_info.scale:
         sheet["scale"] = sheet_info.scale
-    if chosen_bounds is not None:
-        sheet["bounds"] = list(chosen_bounds)
+    if bounds is not None:
+        sheet["bounds"] = list(bounds)
 
     def issue(message, element=None, at=None):
         entry = {
@@ -374,15 +388,15 @@ def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floor
         if entry not in model["issues"]:
             model["issues"].append(entry)
 
-    for warning in bind_xrefs(doc, drawing, root):
+    for warning in xref_warnings:
         issue(warning)
-    items, warnings = primitives(doc, factor, chosen_bounds)
+    items, warnings = primitives(doc, factor, bounds) if selected_items is None else selected_items
     for message in warnings:
         issue(message)
     level_items = items
-    if sheet_info.bounds is not None and sheet_info.bounds != chosen_bounds:
+    if sheet_info.bounds is not None and sheet_info.bounds != bounds:
         level_items, _ = primitives(doc, factor, sheet_info.bounds)
-    levels, level_rows, warnings = _plan_levels(level_items, sheet_info.title, subject, rules)
+    levels, level_rows, warnings = _plan_levels(level_items, sheet_info.title, subject, rules) if verified_levels is None else (verified_levels, [], [])
     model["levels"] = levels
     sheet["levels"] = [level["id"] for level in levels]
     for message in warnings:
@@ -446,7 +460,7 @@ def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floor
                 for identifier in sorted({column["id"] for column in joined if "id" in column})
             )
     if subject == "arch":
-        _add_openings(model, items, level_items, drawing, root, rules, issue)
+        _add_openings(model, items, level_items, drawing, root, rules, issue, read_companion)
         _add_rooms(model, items, rules, issue)
         _add_slabs(model, items, rules, issue)
         ramps, ramp_warnings = identify_ramps(items, sheet_id=sheet_id, base_level=levels[0]["id"],
@@ -463,7 +477,7 @@ def run(input_path: Path, bounds: Bounds | None = None, *, repeat_standard_floor
         for message in repeat_warnings:
             issue(message)
     if subject == "arch":
-        _apply_window_sills(model, drawing, root, issue)
+        _apply_window_sills(model, drawing, root, issue, read_elevations)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
         if count == 0 and (category != "墙" or subject != "struct"):
             issue(f"当前图纸范围内没有识别到{category}。")

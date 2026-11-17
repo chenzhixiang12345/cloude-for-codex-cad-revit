@@ -33,6 +33,11 @@ public sealed class App : IExternalApplication
         {
             ToolTip = "按 DXF 图名标明的楼层范围及楼层表生成多个标准层。"
         });
+        panel.AddItem(new PushButtonData("TuMo.MergeFloors", "从 DXF\n合并楼层",
+            Assembly.GetExecutingAssembly().Location, typeof(MergeFloorsCommand).FullName!)
+        {
+            ToolTip = "按楼层表和共有轴网对齐同一建筑 DXF 内的多张平面图。"
+        });
         panel.AddItem(new PushButtonData("TuMo.Review", "从 DXF\n审图",
             Assembly.GetExecutingAssembly().Location, typeof(ReviewCommand).FullName!)
         {

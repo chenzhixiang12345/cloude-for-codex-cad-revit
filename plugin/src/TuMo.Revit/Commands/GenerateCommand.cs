@@ -16,9 +16,9 @@ namespace TuMo.Revit.Commands;
 public sealed class GenerateCommand : IExternalCommand
 {
     public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
-        => Run(commandData, ref message, repeatStandardFloors: false);
+        => Run(commandData, ref message, FloorMode.Single);
 
-    internal static Result Run(ExternalCommandData commandData, ref string message, bool repeatStandardFloors)
+    internal static Result Run(ExternalCommandData commandData, ref string message, FloorMode mode)
     {
         var document = commandData.Application.ActiveUIDocument?.Document;
         if (document == null || document.IsFamilyDocument || document.IsReadOnly)
@@ -30,7 +30,12 @@ public sealed class GenerateCommand : IExternalCommand
         var picker = new OpenFileDialog
         {
             Filter = "CAD DXF (*.dxf)|*.dxf",
-            Title = repeatStandardFloors ? "选择带楼层范围和楼层表的标准层平面图" : "选择一张平面图",
+            Title = mode switch
+            {
+                FloorMode.Standard => "选择带楼层范围和楼层表的标准层平面图",
+                FloorMode.Building => "选择包含多张楼层平面的建筑 DXF",
+                _ => "选择一张平面图"
+            },
             Multiselect = false,
             CheckFileExists = true
         };
@@ -45,7 +50,7 @@ public sealed class GenerateCommand : IExternalCommand
             log.Write($"Revit {application.VersionNumber}, build {application.VersionBuild}; " +
                 $"TuMo {Assembly.GetExecutingAssembly().GetName().Version}");
             log.Write($"输入 {picker.FileName}");
-            var output = EngineRunner.Run(picker.FileName, log, repeatStandardFloors);
+            var output = EngineRunner.Run(picker.FileName, log, mode);
             var model = TuMoModel.Read(Path.Combine(output, "model.json"));
             log.Write($"识别结果，标高 {model.Levels.Length}，轴网 {model.Grids.Length}，构件 {model.Elements.Length}。");
             var reportPath = Path.Combine(output, "issues.json");
@@ -73,5 +78,13 @@ public sealed class GenerateCommand : IExternalCommand
 public sealed class GenerateStandardFloorsCommand : IExternalCommand
 {
     public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
-        => GenerateCommand.Run(commandData, ref message, repeatStandardFloors: true);
+        => GenerateCommand.Run(commandData, ref message, FloorMode.Standard);
+}
+
+[Transaction(TransactionMode.Manual)]
+[Regeneration(RegenerationOption.Manual)]
+public sealed class MergeFloorsCommand : IExternalCommand
+{
+    public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
+        => GenerateCommand.Run(commandData, ref message, FloorMode.Building);
 }

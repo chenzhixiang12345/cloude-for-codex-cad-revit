@@ -92,7 +92,15 @@ def _run(args):
         source = args.input.resolve()
         output = (args.output or Path("out")).resolve()
         bounds = _bounds(args.bounds)
-    model = TumoModel.model_validate(run(source, bounds=bounds, repeat_standard_floors=args.repeat_standard_floors))
+    if args.merge_floors:
+        if bounds is not None:
+            raise ValueError("合并楼层需要读取完整 DXF，不能同时指定单张图的范围。")
+        from tumo_engine.building_pipeline import run_building
+
+        result = run_building(source)
+    else:
+        result = run(source, bounds=bounds, repeat_standard_floors=args.repeat_standard_floors)
+    model = TumoModel.model_validate(result)
     model = model.model_dump(mode="json", exclude_unset=True)
     output.mkdir(parents=True, exist_ok=True)
     _write_json(output / "model.json", model)
@@ -159,7 +167,9 @@ def main(argv=None):
     run.add_argument("input", type=Path)
     run.add_argument("-o", "--output", type=Path)
     run.add_argument("--bounds", type=float, nargs=4, metavar=("XMIN", "YMIN", "XMAX", "YMAX"))
-    run.add_argument("--repeat-standard-floors", action="store_true", help="按图名和明确的楼层表复用标准层。")
+    building_mode = run.add_mutually_exclusive_group()
+    building_mode.add_argument("--repeat-standard-floors", action="store_true", help="按图名和明确的楼层表复用标准层。")
+    building_mode.add_argument("--merge-floors", action="store_true", help="对齐同一 DXF 中建筑平面的标高和共有轴网。")
     run.set_defaults(handler=_run)
     render = commands.add_parser("render", help="输出 SVG 和 PNG 识别结果图。")
     render.add_argument("model", type=Path)
