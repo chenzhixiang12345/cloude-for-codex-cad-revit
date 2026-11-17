@@ -12,7 +12,7 @@ from shapely.geometry import LineString, MultiPoint
 
 from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import Bounds, bind_xrefs, primitives, unit_factor
-from tumo_engine.recognize import structural_beams, structural_slabs
+from tumo_engine.recognize import structural_beams, structural_columns, structural_slabs
 from tumo_engine.recognize.column import recognize_columns
 from tumo_engine.recognize.elevation import read_elevation_drawing
 from tumo_engine.recognize.geometry import rounded
@@ -29,6 +29,7 @@ from tumo_engine.recognize.wall import (
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
 from tumo_engine.tables import OpeningScheduleRow, WallOpeningScheduleRow, read_opening_schedule
+from tumo_engine.tables import columns as column_tables
 from tumo_engine.tables.levels import read_level_schedule
 
 
@@ -403,6 +404,43 @@ def _use_structural_datum(levels):
             level.pop("elevation_arch", None)
 
 
+def _add_structural_columns(model, doc, items, level_rows, rules, issue, repeat):
+    sheet = model["sheets"][0]
+    title = sheet["title"]
+    span, _ = standard_floor_span(title)
+    first = span[0] if span else floor_from_title(title.replace("墙柱", ""))
+    if first is None:
+        issue("墙柱图没有明确楼层，暂不生成结构柱。")
+        return
+    last = span[1] if span and repeat else first
+    rows = {row.number: row for row in level_rows if row.elevation_struct is not None}
+    table_rows, _ = column_tables.read_column_schedules(doc, rules=rules)
+    levels = {}
+    for floor in range(first, last + 1):
+        low, high = rows.get(floor), rows.get(1 if floor == -1 else floor + 1)
+        if low is None or high is None or high.elevation_struct <= low.elevation_struct:
+            issue(f"{floor}F 缺少明确递增的结构柱起止标高。")
+            continue
+        for row in (low, high):
+            level = row.to_level()
+            level["evidence"] = ["level_schedule:" + ",".join(row.handles)]
+            levels[row.id] = level
+        candidates, warnings = structural_columns.recognize_structural_columns(
+            items, table_rows, plan_title=title, floor_number=floor, rules=rules,
+        )
+        for message, at in warnings:
+            issue(f"{low.name} {message}", at=at)
+        for column, _ in candidates:
+            column.update({"id": _stable_id("C", sheet["id"], low.id, column["geometry"]),
+                           "discipline": "struct", "base_level": low.id, "top_level": high.id,
+                           "source": {"sheet": sheet["id"], "handles": column.pop("handles")}})
+            model["elements"].append(column)
+    if levels:
+        model["levels"] = list(levels.values())
+        sheet["levels"] = list(levels)
+        _use_structural_datum(model["levels"])
+
+
 def _level_schedule(items, discipline, rules):
     return read_level_schedule(items, discipline=discipline, layer_pattern=rules["layers"]["level_table"],
                                row_tolerance=rules["level"]["row_tolerance"])
@@ -506,6 +544,7 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
     slab_span = slab_top_floor_span(sheet_info.title) if subject == "struct" else None
     beam_span = structural_beams.beam_top_floor_span(sheet_info.title, rules) if subject == "struct" else None
     structural_span = slab_span or beam_span
+    column_plan = subject == "struct" and "墙柱" in sheet_info.title and sheet_kind(sheet_info.title) == "floor_plan"
     sheet_id = sheet_info.number or _stable_id("S", relative, sheet_info.title)
     model = {
         "schema_version": "0.1",
@@ -584,7 +623,7 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
             scope = footprint.buffer(rules["grid"]["plan_margin"])
             items = [item for item in items if scope.intersects(item.shape)]
 
-    columns = [] if structural_span else recognize_columns(items, rules)
+    columns = [] if structural_span or column_plan else recognize_columns(items, rules)
     walls = recognize_walls(items, columns, rules) if subject != "struct" else []
     if subject != "struct":
         for handle, at in unbuilt_structural_wall_areas(items, walls, columns, rules):
@@ -636,7 +675,9 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
         model["elements"].extend(beams)
         model["issues"].extend(warnings)
         _use_structural_datum(levels)
-    if repeat_standard_floors:
+    elif column_plan:
+        _add_structural_columns(model, doc, items, level_rows, rules, issue, repeat_standard_floors)
+    if repeat_standard_floors and not column_plan:
         expanded, repeat_warnings = expand_standard_floors(
             model, sheet_info.title, level_rows, floor_span=slab_span if slab_span and slab_span[0] < slab_span[1] else None,
         )
@@ -651,6 +692,6 @@ def _recognize_plan(path, drawing, root, doc, rules, factor, sheet_info, *, boun
     if subject == "arch":
         _apply_window_sills(model, details, sills, sill_conflicts, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
-        if count == 0 and (category != "墙" or subject != "struct") and (category != "柱" or not structural_span):
+        if count == 0 and (category != "墙" or subject != "struct") and (category != "柱" or not (structural_span or column_plan)):
             issue(f"当前图纸范围内没有识别到{category}。")
     return model

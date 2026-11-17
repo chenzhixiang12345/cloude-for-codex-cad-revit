@@ -159,6 +159,19 @@ column_schedule:
   coordinate_tolerance: 2
   display_tolerance: 1
   size_range: [100, 5000]
+structural_column:
+  layers:
+    label: '^(?:TAB[-_]TEXT|S[-_]COLU[-_]TEXT)$'
+    outline: '^(?:COLU[-_]OLIN|S[-_]COLU)$'
+    fill: '^(?:COLU[-_]H(?:ATCH|ACH)|S[-_]COLU[-_]H(?:ATCH|ACH))$'
+    leader: '^COLU[-_]DE[-_]TEXT$'
+  mark_pattern: '(?:KZ|GZ|Z)\d+[A-Z]*'
+  preferred_outline_layer: COLU_OLIN
+  caption_tolerance: 60
+  tip_to_caption: [50, 2200]
+  tip_tolerance: 2
+  fill_tolerance: 1
+  section_tolerance: 2
 structural_beam:
   top_title_token: '顶梁(?=平法施工图$)'
   reference_layer: 'S[-_]PLAN[-_]TEXT'
