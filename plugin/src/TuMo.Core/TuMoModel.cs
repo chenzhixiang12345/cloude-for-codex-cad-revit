@@ -107,6 +107,7 @@ public sealed class ModelElement
     [DataMember(Name = "discipline")] public string? Discipline { get; set; }
     [DataMember(Name = "type")] public ElementType? Type { get; set; }
     [DataMember(Name = "geometry")] public Geometry? Geometry { get; set; }
+    [DataMember(Name = "params")] public ModelElementParameters? Parameters { get; set; }
     [DataMember(Name = "base_level")] public string? BaseLevel { get; set; }
     [DataMember(Name = "top_level")] public string? TopLevel { get; set; }
     [DataMember(Name = "base_offset")] public double? BaseOffset { get; set; }
@@ -116,6 +117,13 @@ public sealed class ModelElement
     [DataMember(Name = "confidence")] public double? Confidence { get; set; }
     [DataMember(Name = "evidence")] public string[]? Evidence { get; set; }
     [DataMember(Name = "source")] public DrawingSource? Source { get; set; }
+}
+
+[DataContract]
+public sealed class ModelElementParameters
+{
+    [DataMember(Name = "seed")] public double[]? Seed { get; set; }
+    [DataMember(Name = "label_point")] public double[]? LabelPoint { get; set; }
 }
 
 [DataContract]

@@ -16,6 +16,8 @@ from tumo_engine.recognize.geometry import rounded
 from tumo_engine.recognize.grid import recognize_grids
 from tumo_engine.recognize.level import recognize_levels
 from tumo_engine.recognize.opening import recognize_openings
+from tumo_engine.recognize.room import identify_rooms
+from tumo_engine.recognize.slab import recognize_slabs
 from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_areas
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
@@ -114,6 +116,43 @@ def _add_openings(model, items, sheet_items, drawing, root, issue):
             issue(f"{mark} 缺少窗台高度。请对照立面或剖面。", candidate["id"], at)
         else:
             issue(f"请核对 {mark} 的尺寸和宿主墙。", candidate["id"], at)
+
+
+def _add_rooms(model, items, rules, issue):
+    sheet = model["sheets"][0]
+    walls = [element for element in model["elements"] if element["category"] == "wall"]
+    openings = [element for element in model["elements"] if element["category"] in _OPENING_PREFIX]
+    base, top = model["levels"][:2]
+    rooms, warnings = identify_rooms(items, walls, openings, sheet_id=sheet["id"],
+                                     base_level=base["id"], top_level=top["id"])
+    model["elements"].extend(rooms)
+    for entry in warnings:
+        issue(entry["message"], at=entry["at"])
+    for room in rooms:
+        if room["confidence"] < rules["confidence"]["review"]:
+            issue("请在 Revit 中复核房名和围合边界。", room["id"], room["params"]["label_point"])
+
+
+def _add_slabs(model, items, rules, issue):
+    sheet = model["sheets"][0]
+    slabs, openings, warnings = recognize_slabs(items, rules)
+    for message, at in warnings:
+        issue(message, at=at)
+
+    def publish(candidate, identifier):
+        candidate.update({
+            "id": identifier,
+            "discipline": sheet["discipline"],
+            "base_level": model["levels"][0]["id"],
+            "source": {"sheet": sheet["id"], "handles": candidate.pop("handles")},
+        })
+        model["elements"].append(candidate)
+
+    for slab in slabs:
+        publish(slab, _stable_id("SL", sheet["id"], slab["geometry"], slab["base_offset"]))
+    for opening, host in openings:
+        opening["host"] = host["id"]
+        publish(opening, _stable_id("SO", host["id"], opening["geometry"]))
 
 
 def run(input_path: Path, bounds: Bounds | None = None) -> dict:
@@ -254,6 +293,8 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
             )
     if subject == "arch":
         _add_openings(model, items, level_items, drawing, root, issue)
+        _add_rooms(model, items, rules, issue)
+        _add_slabs(model, items, rules, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):
         if count == 0 and (category != "墙" or subject != "struct"):
             issue(f"当前图纸范围内没有识别到{category}。")

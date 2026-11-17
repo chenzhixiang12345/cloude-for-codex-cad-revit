@@ -15,10 +15,11 @@ internal static class ModelBuilder
     {
         var candidates = model.Elements.Where(e => e.Category is "column" or "wall").ToArray();
         var openings = model.Elements.Where(e => e.Category is "door" or "window" or "wall_opening").ToArray();
-        if (model.Grids.Length == 0 && candidates.Length == 0)
-            throw new InvalidOperationException("这张图没有识别出轴网、柱或墙。请查看疑点报告。");
+        var interiors = model.Elements.Where(e => e.Category is "room" or "slab" or "slab_opening").ToArray();
+        if (model.Grids.Length == 0 && candidates.Length == 0 && interiors.Length == 0)
+            throw new InvalidOperationException("这张图没有识别出可生成的构件。请查看疑点报告。");
 
-        RejectCollisions(document, candidates.Concat(openings));
+        RejectCollisions(document, candidates.Concat(openings).Concat(interiors));
         var sheets = model.Sheets.ToDictionary(s => s.Id, StringComparer.Ordinal);
         using var transaction = new Transaction(document, "TuMo 生成模型");
         transaction.Start();
@@ -62,9 +63,11 @@ internal static class ModelBuilder
             document.Regenerate();
             JoinGeometry.Connect(document, created, model.Relations, log);
             var openingReport = CreateOpenings(document, model, openings, created, levels, dimensions, sheets, ids, log);
+            var interiorReport = CreateRoomsAndSlabs(document, model, interiors, created, levels, sheets, ids, log);
             if (transaction.Commit() != TransactionStatus.Committed)
                 throw new InvalidOperationException("Revit 无法提交模型。请查看日志。");
-            return $"标高 {levels.Count}，轴网 {model.Grids.Length}，柱 {candidates.Count(e => e.Category == "column")}，墙 {candidates.Count(e => e.Category == "wall")}。" + openingReport;
+            return $"标高 {levels.Count}，轴网 {model.Grids.Length}，柱 {candidates.Count(e => e.Category == "column")}，墙 {candidates.Count(e => e.Category == "wall")}。"
+                + openingReport + interiorReport;
         }
         catch
         {
@@ -118,6 +121,7 @@ internal static class ModelBuilder
                 if (change.Commit() != TransactionStatus.Committed)
                     throw new InvalidOperationException("Revit 未能提交该构件。");
 
+                created.Add(source.Id, result);
                 counts[source.Category]++;
                 if (needsReview)
                     review++;
@@ -138,13 +142,103 @@ internal static class ModelBuilder
         return $"门 {counts["door"]}，窗 {counts["window"]}，墙洞 {counts["wall_opening"]}，待核对 {review}，跳过 {skipped}。";
     }
 
+    private static string CreateRoomsAndSlabs(Document document, TuMoModel model, ModelElement[] sources,
+        Dictionary<string, Element> created, Dictionary<string, Level> levels, Dictionary<string, Sheet> sheets,
+        TuMoIds ids, RunLog log)
+    {
+        if (sources.Length == 0)
+            return "";
+
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var category in new[] { "slab", "slab_opening", "room" })
+        {
+            counts[category] = 0;
+            foreach (var source in sources.Where(item => item.Category == category))
+            {
+                using var change = new SubTransaction(document);
+                if (change.Start() != TransactionStatus.Started)
+                    throw new InvalidOperationException("不能开始楼板、板洞或房间子事务。");
+                try
+                {
+                    if (created.ContainsKey(source.Id))
+                        throw new InvalidOperationException("TuMo 编号重复。");
+                    if (source.BaseLevel == null || !levels.TryGetValue(source.BaseLevel, out var level))
+                        throw new InvalidOperationException($"找不到底标高 {source.BaseLevel ?? "（无）"}。");
+
+                    var transform = TransformFor(source.Source, sheets);
+                    var z = level.ProjectElevation;
+                    Element result;
+                    if (category == "slab")
+                    {
+                        result = SlabPlacement.Create(document, source, level, Outline(document, source, z, model, transform));
+                        SetMark(result, source.Type?.Mark);
+                        document.Regenerate();
+                    }
+                    else if (category == "slab_opening")
+                    {
+                        if (source.Host == null || !created.TryGetValue(source.Host, out var element) || element is not Floor floor
+                            || floor.LevelId != level.Id)
+                            throw new InvalidOperationException($"找不到同层宿主楼板 {source.Host ?? "（无）"}。");
+                        z += floor.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM).AsDouble();
+                        result = SlabPlacement.CreateOpening(document, floor, Outline(document, source, z, model, transform));
+                    }
+                    else
+                    {
+                        var seed = Point(source.Parameters?.Seed ?? source.Parameters?.LabelPoint, z, model, transform);
+                        var upper = source.TopLevel != null && levels.TryGetValue(source.TopLevel, out var top) ? top : null;
+                        result = RoomPlacement.Create(document, source, level, upper, seed);
+                    }
+
+                    ids.Set(result, source.Id);
+                    if (change.Commit() != TransactionStatus.Committed)
+                        throw new InvalidOperationException("Revit 未能提交该构件。");
+                    created.Add(source.Id, result);
+                    counts[category]++;
+                    log.Write($"生成 {source.Id}，Revit ID {RevitApi.IdValue(result.Id)}。");
+                }
+                catch (Exception error) when (ModelOpenings.CanSkip(error))
+                {
+                    log.Write($"跳过楼板、板洞或房间 {source.Id}：{error.Message}");
+                }
+                finally
+                {
+                    if (change.GetStatus() == TransactionStatus.Started)
+                        change.RollBack();
+                }
+            }
+        }
+
+        return $"房间 {counts["room"]}，楼板 {counts["slab"]}，板洞 {counts["slab_opening"]}，跳过 {sources.Length - counts.Values.Sum()}。";
+    }
+
+    private static CurveLoop Outline(Document document, ModelElement source, double elevation, TuMoModel model, SheetTransform? transform)
+    {
+        if (source.Geometry is not { Kind: "polygon", Points: { Length: >= 3 } vertices })
+            throw new InvalidOperationException("需要至少三个顶点的闭合轮廓。");
+        var points = vertices.Select(vertex => Point(vertex, elevation, model, transform)).ToList();
+        if (points[0].IsAlmostEqualTo(points[points.Count - 1]))
+            points.RemoveAt(points.Count - 1);
+        if (points.Count < 3)
+            throw new InvalidOperationException("轮廓缺少有效顶点。");
+        var curves = new List<Curve>(points.Count);
+        for (var index = 0; index < points.Count; index++)
+        {
+            var start = points[index];
+            var end = points[(index + 1) % points.Count];
+            if (start.DistanceTo(end) <= document.Application.ShortCurveTolerance)
+                throw new InvalidOperationException("轮廓包含过短的边。");
+            curves.Add(Line.CreateBound(start, end));
+        }
+        return CurveLoop.Create(curves);
+    }
+
     private static void RejectCollisions(Document document, IEnumerable<ModelElement> candidates)
     {
         var ids = new HashSet<string>(candidates.Select(element => element.Id), StringComparer.Ordinal);
         if (ids.Count == 0)
             return;
         var categories = new[] { BuiltInCategory.OST_Walls, BuiltInCategory.OST_StructuralColumns,
-            BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows };
+            BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows, BuiltInCategory.OST_Rooms, BuiltInCategory.OST_Floors };
         var existing = new FilteredElementCollector(document).WhereElementIsNotElementType()
             .WherePasses(new LogicalOrFilter(new ElementMulticategoryFilter(categories), new ElementClassFilter(typeof(Opening))));
         foreach (var element in existing)
