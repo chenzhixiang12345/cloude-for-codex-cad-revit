@@ -119,6 +119,7 @@ def _supplement_closed_outlines(items, columns, ordinary_walls, rules):
     wall_index = SpatialIndex(existing, lambda pair: pair[1])
     column_index = SpatialIndex((shape for _, shape in columns), lambda shape: shape)
     accepted = []
+    architectural_outlines = []
     for item in items:
         layer = layer_key(item.layer)
         if item.kind != "polyline" or not item.closed:
@@ -130,6 +131,8 @@ def _supplement_closed_outlines(items, columns, ordinary_walls, rules):
             continue
         # Allow small CAD rounding errors when checking the width of the whole strip.
         padded_outline = outline.buffer(1)
+        if re.search(layers["walls"], layer):
+            architectural_outlines.append((item, layer, padded_outline))
         candidates = []
         for first, second in combinations(segments([item]), 2):
             pair = _pair(first, second, cfg)
@@ -167,6 +170,55 @@ def _supplement_closed_outlines(items, columns, ordinary_walls, rules):
                 "handles": source_handles([item]),
                 "evidence": [f"layer:{layer}", "closed_wall_outline", f"parallel_pair:{width:g}"],
             }
+    yield from _supplement_wall_fills(items, architectural_outlines, wall_index, column_index, accepted, cfg)
+
+
+def _supplement_wall_fills(items, outlines, wall_index, column_index, accepted, cfg):
+    outline_index = SpatialIndex(outlines, lambda entry: entry[2])
+    for fill in items:
+        layer = layer_key(fill.layer)
+        if fill.kind != "polyline" or not layer.endswith(("-HACH", "_HACH")) or not fill.closed or len(fill.points) != 4:
+            continue
+        area = fill.shape
+        if not area.is_valid or area.area <= 0 or not area.buffer(1).covers(area.minimum_rotated_rectangle):
+            continue
+        # A fill layer can also contain legend and floor graphics. Require a separate wall outline.
+        enclosing = [entry for entry in outline_index.nearby(area, 0) if entry[1] == layer[:-5] and entry[2].covers(area)]
+        if len(enclosing) != 1:
+            continue
+        outline, _, padded_outline = enclosing[0]
+        pair = max(
+            (pair for first, second in combinations(segments([fill]), 2)
+             if (pair := _pair(first, second, cfg)) is not None),
+            default=None,
+        )
+        if pair is None:
+            continue
+        _, _, width, start, end = pair
+        line = LineString((start, end))
+        strip = _footprint(line, width)
+        if not area.buffer(1).covers(strip) or not padded_outline.covers(strip):
+            continue
+        inside = strip.buffer(-1)
+        walls = wall_index.nearby(strip, 0)
+        footprints = [other for _, other in walls]
+        footprints.extend(column_index.nearby(strip, 0))
+        footprints.extend(accepted)
+        if any(profile.intersection(inside).area > 0 for profile in footprints):
+            continue
+        overlaps = [(other_line, other.intersection(strip)) for other_line, other in walls]
+        line = _trim_tiny_end_overlaps(line, [(axis, area) for axis, area in overlaps if area.area > 0], cfg)
+        if line.length < cfg["minimum_length"]:
+            continue
+        accepted.append(_footprint(line, width))
+        yield fill, {
+            "category": "wall",
+            "type": {"name": f"墙 {width:g} mm", "thickness": width},
+            "geometry": {"kind": "line", "start": rounded(line.coords[0]), "end": rounded(line.coords[-1])},
+            "confidence": 0.82,
+            "handles": source_handles([outline, fill]),
+            "evidence": [f"layer:{layer}", "wall_fill_inside_outline", f"parallel_pair:{width:g}"],
+        }
 
 
 def _replace_covered_walls(ordinary_walls, by_outline, supplements):

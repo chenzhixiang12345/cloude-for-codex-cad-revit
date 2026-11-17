@@ -69,6 +69,32 @@ def test_recovers_short_returns_of_a_compound_architectural_wall(tmp_path):
     assert all(Polygon(points).covers(wall_footprint(wall)) for wall in walls)
 
 
+def test_recovers_unbuilt_branch_from_rectangular_fill_inside_a_wall_outline(tmp_path):
+    doc = ezdxf.new(units=4)
+    plan = doc.modelspace()
+    points = [(-50, 1200), (-725, 1200), (-725, 1100), (-50, 1100), (-50, 0), (50, 0),
+              (50, 3100), (650, 3100), (650, 3400), (-450, 3400), (-450, 3100), (-50, 3100)]
+    outline = plan.add_lwpolyline(points, close=True, dxfattribs={"layer": "AE-WALL"})
+    branch = [(-50, 0), (50, 0), (50, 1100), (-50, 1100)]
+    fill = plan.add_lwpolyline(branch, close=True, dxfattribs={"layer": "AE-WALL-HACH"})
+    plan.add_lwpolyline([(-50, 0.1), (50, 0.1), (50, 1099.9), (-50, 1099.9)],
+                        close=True, dxfattribs={"layer": "AE-WALL-HACH"})
+    unsupported = plan.add_lwpolyline([(950, 0), (1050, 0), (1050, 1100), (950, 1100)],
+                                      close=True, dxfattribs={"layer": "AE-WALL-HACH"})
+    path = tmp_path / "三层平面图.dxf"
+    doc.saveas(path)
+
+    walls = run(path)["elements"]
+
+    [recovered] = [wall for wall in walls if wall_footprint(wall).covers(Point(0, 550))]
+    assert recovered["geometry"] == {"kind": "line", "start": [0, 0], "end": [0, 1100]}
+    assert recovered["type"]["thickness"] == 100
+    assert set(recovered["source"]["handles"]) == {outline.dxf.handle, fill.dxf.handle}
+    assert all(unsupported.dxf.handle not in wall["source"]["handles"] for wall in walls)
+    assert all(wall_footprint(wall).intersection(wall_footprint(recovered)).area == 0
+               for wall in walls if wall is not recovered)
+
+
 def test_cleans_tiny_end_overlap_with_existing_wall(tmp_path):
     doc = ezdxf.new(units=4)
     plan = doc.modelspace()
