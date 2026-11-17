@@ -275,7 +275,7 @@ def main(argv=None):
     building_mode.add_argument("--repeat-standard-floors", action="store_true", help="按图名和明确的楼层表复用标准层。")
     building_mode.add_argument("--merge-floors", action="store_true", help="对齐同一 DXF 中建筑平面的标高和共有轴网。")
     run.add_argument("--structural-slab", type=Path, help="在 --merge-floors 中加入轴网已配准的结构降板图。")
-    run.add_argument("--structural-columns", type=Path, help="合并带柱表的结构墙柱 DXF。")
+    run.add_argument("--structural-columns", type=Path, help="合并带柱表或墙身表的结构墙柱 DXF。")
     run.add_argument("--column-sheet", help="合并结构柱使用的墙柱图号。")
     run.add_argument("--structural-beams", type=Path, help="合并带梁顶依据的结构梁 DXF。")
     run.add_argument("--beam-sheet", help="合并结构梁使用的梁平面图号。")

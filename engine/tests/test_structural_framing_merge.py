@@ -61,6 +61,88 @@ def test_leaves_unmatched_overlapping_column_as_a_locatable_issue():
     assert any("重叠" in issue["message"] and issue["where"]["sheet"] == "S1" for issue in result["issues"])
 
 
+def _wall(sheet, category, ends, *, thickness=300):
+    return {"id": f"{sheet}-W", "category": category, "discipline": "arch" if category == "wall" else "struct",
+            "base_level": "L3", "top_level": "L4", "type": {"mark": "Q2a", "thickness": thickness},
+            "geometry": {"kind": "line", "start": [ends[0], 1500], "end": [ends[1], 1500]},
+            "confidence": .95, "source": {"sheet": sheet, "handles": ["A"]}}
+
+
+def test_replaces_only_the_covered_wall_body_after_registration():
+    arch, struct = _inputs()
+    existing = _wall("A1", "wall", (5500, 0))
+    arch["elements"] = [existing]
+    arch["issues"] = [{"id": "I1", "severity": "warn", "message": "复核墙轮廓", "element": existing["id"],
+                       "where": {"sheet": "A1", "at": [0, 1500]}}]
+    original = _wall("S1", "shear_wall", (41000, 44900))
+    struct["elements"] = [original]
+
+    result = merge_structural_framing(arch, struct)
+
+    TumoModel.model_validate(result)
+    assert len(result["elements"]) == 3
+    walls = [e for e in result["elements"] if e["category"] == "wall"]
+    assert {(e["geometry"]["start"][0], e["geometry"]["end"][0]) for e in walls} == {(5500, 4900), (1000, 0)}
+    assert all(e["source"] == existing["source"] and e["id"] != existing["id"] for e in walls)
+    shear, = [e for e in result["elements"] if e["category"] == "shear_wall"]
+    assert (shear["base_offset"], shear["top_offset"]) == (-50, -50)
+    assert shear["geometry"] == original["geometry"] and shear["source"] == original["source"]
+    assert result["issues"][0]["where"] == arch["issues"][0]["where"]
+    assert result["issues"][0].get("element") != existing["id"]
+
+
+def test_retains_wall_with_an_opening_and_reports_incompatible_wall_width():
+    arch, struct = _inputs()
+    wall = _wall("A1", "wall", (0, 5500))
+    shear = _wall("S1", "shear_wall", (41000, 44900))
+    opening = {"id": "D1", "category": "door", "host": wall["id"], "source": wall["source"],
+               "base_level": "L3", "geometry": {"kind": "point", "at": [500, 1500]},
+               "type": {"width": 900, "height": 2000}, "confidence": .9}
+    struct["elements"] = [shear]
+    arch["elements"] = [wall, opening]
+    hosted = merge_structural_framing(arch, struct)
+    assert hosted["elements"] == arch["elements"]
+    assert any("宿主" in item["message"] for item in hosted["issues"])
+
+    arch["elements"] = [wall]
+    shear["type"]["thickness"] = 250
+    mismatch = merge_structural_framing(arch, struct)
+    assert mismatch["elements"] == arch["elements"]
+    assert any("重叠" in item["message"] for item in mismatch["issues"])
+
+
+def test_lower_wall_extending_to_architectural_datum_blocks_shear_wall():
+    arch, struct = _inputs()
+    arch["levels"].append({"id": "L2", "name": "2F", "elevation_arch": 4800})
+    current = _wall("A1", "wall", (0, 5500))
+    lower = {**current, "id": "A1-W-2", "base_level": "L2", "top_level": "L3"}
+    arch["elements"] = [lower, current]
+    struct["elements"] = [_wall("S1", "shear_wall", (41000, 44900))]
+
+    overlap = merge_structural_framing(arch, struct)
+
+    assert overlap["elements"] == arch["elements"]
+    assert any("50 毫米" in item["message"] and lower["id"] in item["message"] for item in overlap["issues"])
+
+    lower["top_offset"] = -50
+    touching = merge_structural_framing(arch, struct)
+    assert any(e["category"] == "shear_wall" for e in touching["elements"])
+
+
+def test_slightly_skewed_wall_body_must_not_overlap_the_remaining_parts():
+    arch, struct = _inputs()
+    arch["elements"] = [_wall("A1", "wall", (0, 5500))]
+    skewed = _wall("S1", "shear_wall", (41000, 44900))
+    skewed["geometry"]["start"][1] -= .8
+    skewed["geometry"]["end"][1] += .8
+    struct["elements"] = [skewed]
+
+    result = merge_structural_framing(arch, struct)
+
+    assert result["elements"] == arch["elements"]
+    assert any("重叠" in item["message"] for item in result["issues"])
+
+
 def test_building_job_selects_column_and_beam_drawings_independently(tmp_path, monkeypatch):
     from tumo_engine import building_pipeline, pipeline
 
