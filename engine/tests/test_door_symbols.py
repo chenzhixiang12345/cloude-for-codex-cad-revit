@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import ezdxf
 import pytest
 from shapely.geometry import Point
@@ -138,3 +140,27 @@ def test_pipeline_uses_measured_frame_width_for_a_scheduled_door(tmp_path, corne
         assert "wall:verified_corner_face" in door["evidence"]
         assert "opening:verified_corner_host" in wall["evidence"]
         assert wall_face.dxf.handle in wall["source"]["handles"]
+
+
+def test_pipeline_uses_configured_minimum_door_swing_radius(tmp_path, monkeypatch):
+    from tumo_engine import pipeline
+
+    doc = ezdxf.new(units=4)
+    _frame_parts(doc.blocks.new("DOOR"), radius=890)
+    drawing = doc.modelspace()
+    drawing.add_blockref("DOOR", (1300, 0))
+    drawing.add_text("WM0924A", dxfattribs={"insert": (1745, 500), "layer": "AD-NUMB"})
+    for y in (-70, 130):
+        drawing.add_line((0, y), (4000, y), dxfattribs={"layer": "WALL"})
+    for x, y, value in ((0, 4500, "门窗编号"), (1500, 4500, "洞口尺寸"),
+                        (0, 4000, "WM0924A"), (1500, 4000, "950×2400")):
+        drawing.add_text(value, dxfattribs={"insert": (x, y)})
+    path = tmp_path / "三层建筑平面图.dxf"
+    doc.saveas(path)
+    assert any(element["category"] == "door" for element in pipeline.run(path)["elements"])
+
+    rules = deepcopy(pipeline.defaults())
+    rules["opening"]["door_frame"].setdefault("measurement", {})["minimum_radius"] = 900
+    monkeypatch.setattr(pipeline, "defaults", lambda: rules)
+
+    assert all(element["category"] != "door" for element in pipeline.run(path)["elements"])

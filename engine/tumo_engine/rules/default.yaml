@@ -51,6 +51,20 @@ opening:
     mark_pattern: '(?:(?:F?M|WM)(?:甲|乙|丙)?|D)\d[A-Z0-9*\-/]*'
     radius: 550
     width_tolerance: 5
+    measurement:
+      outline_layers: '(?:^|[-_])DOOR(?:$|[-_])|^(?:门洞|门扇|门框)$'
+      linear_tolerance: 2
+      sweep_degrees: [85, 95]
+      minimum_radius: 250
+      leaf_thickness: [8, 120]
+      leaf_orthogonal_dot_tolerance: 0.02
+      jamb_extent: [10, 200]
+    corner_host:
+      wall_face_tolerance: 2
+      # Must match the horizontal end allowance in Revit ModelOpenings.Create.
+      revit_cut_end_tolerance: 1
+      rounding_tolerance: 0.01
+      face_probe_offset: 0.5
   window_number:
     label_layers: '^(?:AD[-_]NUMB|WINDOW[-_]TEXT|A[-_]WINDOW[-_]LABEL)$'
     mark_pattern: '[A-Z][A-Z甲乙丙]{0,7}[-_]?\d[A-Z0-9甲乙丙*\-/]*'

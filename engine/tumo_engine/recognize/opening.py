@@ -222,7 +222,10 @@ def recognize_openings(
     items = list(items)
     walls = list(walls)
     symbols = SpatialIndex(_opening_segments(items), lambda item: item[0].geometry)
-    frames = SpatialIndex(door_frame_openings(items), lambda segment: segment.geometry) if door_frame_rules else None
+    frames = None
+    if door_frame_rules:
+        measured_frames = door_frame_openings(items, rules=door_frame_rules.get("measurement"))
+        frames = SpatialIndex(measured_frames, lambda segment: segment.geometry)
     if frames is not None:
         door_number_layer = re.compile(door_frame_rules["label_layers"], re.IGNORECASE)
         door_mark_pattern = re.compile(door_frame_rules["mark_pattern"], re.IGNORECASE)
