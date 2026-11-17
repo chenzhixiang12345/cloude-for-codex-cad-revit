@@ -1,7 +1,7 @@
 from math import isclose
 
 import ezdxf
-from shapely.geometry import LineString, Polygon
+from shapely.geometry import LineString, Point, Polygon
 
 from tumo_engine.pipeline import run
 
@@ -36,6 +36,7 @@ def test_recovers_wall_from_structural_layer_in_architectural_plan(tmp_path):
     assert [wall["geometry"]["end"] for wall in walls] == [[4000, 100], [4000, 3100]]
     assert all(wall["type"]["thickness"] == 200 for wall in walls)
     assert walls[1]["source"]["handles"] == [outline.dxf.handle]
+    assert not any("轮廓仍有未建区域" in issue["message"] for issue in model["issues"])
 
 
 def test_recovers_branches_without_building_in_outline_notch(tmp_path):
@@ -98,3 +99,30 @@ def test_avoids_duplicate_outline_over_several_existing_walls(tmp_path):
     walls = run(path)["elements"]
     assert len(walls) == 2
     assert all("closed_wall_outline" not in wall["evidence"] for wall in walls)
+
+
+def test_marks_unverified_stepped_wall_without_guessing_its_build(tmp_path):
+    doc = ezdxf.new(units=4)
+    points = [(0, 0), (700, 0), (700, 950), (300, 950), (300, 1250), (0, 1250)]
+    doc.modelspace().add_lwpolyline(points, close=True, dxfattribs={"layer": "S_WALL"})
+    path = tmp_path / "三层平面图.dxf"
+    doc.saveas(path)
+
+    model = run(path)
+    assert model["elements"] == []
+    [issue] = [issue for issue in model["issues"] if "轮廓仍有未建区域" in issue["message"]]
+    assert Polygon(points).contains(Point(issue["where"]["at"]))
+
+
+def test_reports_unbuilt_wall_outline_at_a_locatable_point(tmp_path):
+    doc = ezdxf.new(units=4)
+    points = [(0, 0), (3000, 0), (3000, 700), (0, 700)]
+    outline = doc.modelspace().add_lwpolyline(points, close=True, dxfattribs={"layer": "S_WALL"})
+    path = tmp_path / "三层平面图.dxf"
+    doc.saveas(path)
+
+    model = run(path)
+    assert not model["elements"]
+    [issue] = [issue for issue in model["issues"] if "轮廓仍有未建区域" in issue["message"]]
+    assert outline.dxf.handle in issue["message"]
+    assert issue["where"]["at"] == [1500, 350]

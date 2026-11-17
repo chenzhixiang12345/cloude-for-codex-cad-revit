@@ -2,7 +2,7 @@ import re
 from itertools import combinations
 from math import dist
 
-from shapely import get_coordinates
+from shapely import get_coordinates, get_parts
 from shapely.geometry import LineString, Point
 from shapely.ops import nearest_points, unary_union
 
@@ -34,6 +34,34 @@ def _pair(first, second, cfg):
 
 def _footprint(line, width):
     return line.buffer(width / 2, cap_style=2)
+
+
+def _wall_footprint(wall):
+    geometry = wall["geometry"]
+    return _footprint(LineString((geometry["start"], geometry["end"])), wall["type"]["thickness"])
+
+
+def unbuilt_structural_wall_areas(items, walls, columns, rules):
+    """Locate visible wall outlines that accepted walls and columns do not cover."""
+    pattern = rules["layers"]["structural_wall_outlines"]
+    cutoff = rules["confidence"]["publish"]
+    footprints = [_wall_footprint(wall) for wall, _ in walls if wall["confidence"] >= cutoff]
+    footprints.extend(shape for column, shape in columns if column["confidence"] >= cutoff)
+    index = SpatialIndex(footprints, lambda shape: shape)
+    cfg = rules["wall"]
+    minimum_area = cfg["minimum_length"] * min(cfg["thicknesses"])
+    for item in items:
+        if item.kind != "polyline" or not item.closed or not re.search(pattern, layer_key(item.layer)):
+            continue
+        outline = item.shape
+        if not outline.is_valid or outline.area < minimum_area:
+            continue
+        # Ignore submillimetre edges left by CAD and model coordinate rounding.
+        nearby = index.nearby(outline, 1)
+        remaining = outline.difference(unary_union(nearby).buffer(1)) if nearby else outline
+        for part in get_parts(remaining):
+            if part.area >= minimum_area:
+                yield item.handles[-1] if item.handles else None, rounded(part.representative_point().coords[0])
 
 
 def _extend_within_outline(line, width, first, outline, padded_outline):

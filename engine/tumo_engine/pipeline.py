@@ -15,7 +15,7 @@ from tumo_engine.recognize.column import recognize_columns
 from tumo_engine.recognize.geometry import rounded
 from tumo_engine.recognize.grid import recognize_grids
 from tumo_engine.recognize.level import recognize_levels
-from tumo_engine.recognize.wall import recognize_walls
+from tumo_engine.recognize.wall import recognize_walls, unbuilt_structural_wall_areas
 from tumo_engine.rules import defaults
 from tumo_engine.sheets import NUMBER, catalog_title, discipline, drawing_sheets, input_drawing, sheet_kind
 
@@ -154,6 +154,10 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
 
     columns = recognize_columns(items, rules)
     walls = recognize_walls(items, columns, rules) if subject != "struct" else []
+    if subject != "struct":
+        for handle, at in unbuilt_structural_wall_areas(items, walls, columns, rules):
+            source = f"（CAD 句柄 {handle}）" if handle else ""
+            issue(f"结构墙轮廓仍有未建区域{source}。请对照底图复核。", at=at)
     ordered = sorted(columns, key=lambda item: item[0]["geometry"]["at"])
     ordered += sorted(walls, key=lambda item: (item[0]["geometry"]["start"], item[0]["geometry"]["end"]))
     for element, joined in ordered:
