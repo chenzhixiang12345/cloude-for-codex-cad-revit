@@ -160,3 +160,38 @@ def test_rejects_competing_wall_pairs_without_selecting_one():
 
     assert openings == []
     assert [issue["code"] for issue in issues] == ["host_ambiguous"]
+
+
+@pytest.mark.parametrize(("layer", "second_stroke", "nearer_number", "accepted"), [
+    ("AD-NUMB", True, False, True),
+    ("0", True, False, False),
+    ("AD-NUMB", False, False, False),
+    ("AD-NUMB", True, True, False),
+])
+def test_far_window_number_requires_two_strokes_inside_one_verified_wall_gap(
+    layer, second_stroke, nearer_number, accepted,
+):
+    doc = ezdxf.new(units=4)
+    drawing = doc.modelspace()
+    drawing.add_text("TC01", dxfattribs={"insert": (1250, 630), "layer": layer})
+    drawing.add_line((800, 0), (1700, 0), dxfattribs={"layer": "AE-WIND"})
+    if second_stroke:
+        drawing.add_line((800, 40), (1700, 40), dxfattribs={"layer": "AE-WIND"})
+    if nearer_number:
+        drawing.add_text("C02", dxfattribs={"insert": (1250, 200), "layer": "AD-NUMB"})
+    walls = [_wall_fragment("W1", 0, 800), _wall_fragment("W2", 1700, 4000)]
+    schedule = [OpeningScheduleRow("TC01", 900, 1400, None, ())]
+    rules = defaults()["opening"]
+
+    openings, issues = _match(doc, walls, schedule, wall_pair_rules=rules["wall_pair"],
+                              window_number_rules=rules["window_number"])
+
+    if accepted:
+        [opening] = openings
+        assert opening["wall_pair"] == ["W1", "W2"]
+        assert opening["geometry"]["at"] == [1250, 0]
+        assert "window:two_strokes_verified_gap" in opening["evidence"]
+        assert issues == []
+    else:
+        assert openings == []
+        assert [entry["code"] for entry in issues] == ["opening_evidence_missing"]

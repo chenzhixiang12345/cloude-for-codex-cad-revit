@@ -133,6 +133,33 @@ def _issue(label, mark, code, description):
     return {"code": code, "mark": mark, "message": f"{mark}：{description}", "at": rounded(label.points[0])}
 
 
+def _verified_window_gaps(label, width, symbols, walls, numbers, host_distance, pair_rules, number_rules):
+    """Allow a farther window number only at a measured, uniquely supported gap."""
+    radius = number_rules["radius"]
+    width_tolerance = number_rules["width_tolerance"]
+    strict_pairs = {**pair_rules, "width_tolerance": width_tolerance}
+    origin = Point(label.points[0])
+    strokes = defaultdict(list)
+    for symbol, category in symbols.nearby(origin, radius):
+        if category != "window" or abs(symbol.length - width) > width_tolerance:
+            continue
+        geometry = symbol.geometry
+        distance = geometry.distance(origin)
+        if any(_mark(other.text) != _mark(label.text) and geometry.distance(Point(other.points[0])) < distance
+               for other in numbers.nearby(geometry, distance)):
+            continue
+        for pair, at in _matching_wall_pairs(symbol, walls.nearby(geometry, host_distance), width,
+                                             number_rules["host_tolerance"], strict_pairs):
+            strokes[(pair, category, at)].append(symbol)
+    matches = {}
+    for key, nearby in strokes.items():
+        axis = nearby[0].axis
+        offsets = [symbol.offset(axis) for symbol in nearby]
+        if max(offsets) - min(offsets) >= number_rules["minimum_stroke_spacing"]:
+            matches[key] = [item for symbol in nearby for item in symbol.primitives]
+    return matches
+
+
 def recognize_openings(
     items: Iterable[Primitive],
     walls: Iterable[dict],
@@ -143,6 +170,7 @@ def recognize_openings(
     host_tolerance: float = 25,
     angle_tolerance: float = 5,
     wall_pair_rules: Mapping[str, float] | None = None,
+    window_number_rules: Mapping | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Return opening candidates and located issues for exact scheduled tags.
 
@@ -167,6 +195,14 @@ def recognize_openings(
     hosts = list(_hosts(walls))
     wall_index = SpatialIndex(hosts, lambda host: host.centerline.geometry)
     maximum_half_thickness = max((host.thickness / 2 for host in hosts), default=0)
+    if window_number_rules is not None and wall_pair_rules is not None:
+        number_layer = re.compile(window_number_rules["label_layers"], re.IGNORECASE)
+        number_pattern = re.compile(window_number_rules["mark_pattern"], re.IGNORECASE)
+        window_mark_pattern = re.compile(window_number_rules["window_mark_pattern"], re.IGNORECASE)
+        numbers = SpatialIndex((item for item in items if item.kind == "text" and number_layer.search(layer_key(item.layer))
+                                and number_pattern.fullmatch(_mark(item.text))), lambda item: Point(item.points[0]))
+    else:
+        numbers = None
 
     issues = []
     proposals = defaultdict(list)
@@ -203,10 +239,7 @@ def recognize_openings(
             (segment, category) for segment, category in symbols_at_label
             if (category == "wall_opening") == is_wall and abs(segment.length - width) <= width_tolerance
         ]
-        if not nearby:
-            issues.append(_issue(label, mark, "opening_evidence_missing", "标注附近没有尺寸相符的洞口线。"))
-            continue
-        if is_wall and sill is None:
+        if nearby and is_wall and sill is None:
             issues.append(_issue(label, mark, "wall_opening_bottom_missing", "缺少明确的洞底相对标高。"))
             continue
 
@@ -224,8 +257,16 @@ def recognize_openings(
             for symbol, category, possible in nearby_walls:
                 for pair, at in _matching_wall_pairs(symbol, possible, width, host_tolerance, wall_pair_rules):
                     matches[(pair, category, at)].extend(symbol.primitives)
+        far_window = False
+        if (not nearby and not is_wall and numbers is not None and number_layer.search(layer_key(label.layer))
+                and window_mark_pattern.fullmatch(mark)):
+            matches = _verified_window_gaps(label, width, symbols, wall_index, numbers,
+                                             maximum_half_thickness + host_tolerance, wall_pair_rules, window_number_rules)
+            far_window = bool(matches)
         if not matches:
-            issues.append(_issue(label, mark, "host_missing", "没有找到覆盖该洞口的宿主墙。"))
+            code = "host_missing" if nearby else "opening_evidence_missing"
+            message = "没有找到覆盖该洞口的宿主墙。" if nearby else "标注附近没有尺寸相符的洞口线。"
+            issues.append(_issue(label, mark, code, message))
             continue
         if len(matches) > 1:
             several_walls = len({host for host, _, _ in matches}) > 1
@@ -234,17 +275,17 @@ def recognize_openings(
             issues.append(_issue(label, mark, code, message))
             continue
         (host, category, at), sources = next(iter(matches.items()))
-        proposals[(host, at)].append((label, mark, category, width, height, sill, sources))
+        proposals[(host, at)].append((label, mark, category, width, height, sill, sources, far_window))
 
     result = []
     for (host, at), options in proposals.items():
-        _, mark, category, width, height, sill, _ = options[0]
+        _, mark, category, width, height, sill, _, _ = options[0]
         if len({(tag, kind) for _, tag, kind, *_ in options}) > 1:
             for label, tag, *_ in options:
                 issues.append(_issue(label, tag, "mark_ambiguous", "同一个洞口对应多个标注或类型。"))
             continue
         handles = source_handles(
-            item for label, *_, sources in options for item in [label, *sources]
+            item for label, *_, sources, _fallback in options for item in [label, *sources]
         )
         candidate = {
             "category": category,
@@ -260,6 +301,8 @@ def recognize_openings(
         else:
             candidate["wall_pair"] = list(host)
             candidate["evidence"].append("wall:paired_ends")
+        if any(option[-1] for option in options):
+            candidate["evidence"].append("window:two_strokes_verified_gap")
         if sill is not None:
             candidate["sill_height"] = sill
         if category == "wall_opening":

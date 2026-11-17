@@ -43,6 +43,14 @@ level:
   default_height: 3000
   row_tolerance: 180
 opening:
+  window_number:
+    label_layers: '^(?:AD[-_]NUMB|WINDOW[-_]TEXT|A[-_]WINDOW[-_]LABEL)$'
+    mark_pattern: '[A-Z][A-Z甲乙丙]{0,7}[-_]?\d[A-Z0-9甲乙丙*\-/]*'
+    window_mark_pattern: '(?:C|TC|BYC)\d[A-Z0-9*\-/]*'
+    radius: 650
+    width_tolerance: 10
+    host_tolerance: 25
+    minimum_stroke_spacing: 6
   wall_pair:
     endpoint_tolerance: 30
     width_tolerance: 30

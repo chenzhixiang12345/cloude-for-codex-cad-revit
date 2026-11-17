@@ -162,7 +162,9 @@ def _add_openings(model, items, sheet_items, drawing, root, rules, issue, read_c
         item for item in items
         if item.kind != "text" or not item.handles or not set(item.handles) <= inline_handles
     )
-    candidates, issues = recognize_openings(plan_items, hosts.values(), schedule, wall_pair_rules=rules["opening"]["wall_pair"])
+    opening_rules = rules["opening"]
+    candidates, issues = recognize_openings(plan_items, hosts.values(), schedule, wall_pair_rules=opening_rules["wall_pair"],
+                                           window_number_rules=opening_rules["window_number"])
     for entry in issues:
         issue(entry["message"], at=entry["at"])
 
