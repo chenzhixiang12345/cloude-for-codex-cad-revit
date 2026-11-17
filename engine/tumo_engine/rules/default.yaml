@@ -10,6 +10,7 @@ layers:
   columns: '(?:^|[-_])(?:COLUMN|COL|PILLAR|柱)(?:$|[-_])'
   walls: '^(?:WALL|AE[-_]WALL)(?:$|[-_](?:BLOCK|LINE)$)|砌体|墙线'
   structural_profiles: '^(?:S[-_]WALL|AE[-_]STRU)(?:$|[-_]HACH$)'
+  structural_wall_outlines: '^S[-_]WALL$'
   level_table: '(?:层高表|楼层表|LEVEL[-_]TABLE|层数表)'
 grid:
   label_pattern: '^(?:[A-Z]{1,2}|\d{1,3})(?:[/.-](?:[A-Z]{1,2}|\d{1,3}))?$'
@@ -34,6 +35,7 @@ wall:
   minimum_length: 250
   minimum_length_ratio: 1.25
   minimum_overlap_ratio: 0.45
+  outline_end_overlap: 1
   direction_tolerance_deg: 1
   collinear_tolerance: 8
   gap: 65
