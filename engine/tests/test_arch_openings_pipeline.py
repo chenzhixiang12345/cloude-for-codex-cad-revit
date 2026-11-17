@@ -83,3 +83,28 @@ def test_run_limits_companion_schedule_to_the_plan_directory(tmp_path):
     assert {item["category"] for item in model["elements"]} == {"wall"}
     assert any("门窗表.dxf" in item["message"] and "读取" in item["message"]
                for item in model["issues"])
+
+
+def test_run_reconnects_confirmed_split_wall_for_native_opening(tmp_path):
+    drawing = tmp_path / "三层平面图.dxf"
+    doc = ezdxf.new(units=4)
+    space = doc.modelspace()
+    for y in (-100, 100):
+        space.add_line((0, y), (1200, y), dxfattribs={"layer": "WALL"})
+        space.add_line((2100, y), (4000, y), dxfattribs={"layer": "WALL"})
+    space.add_text("M01", dxfattribs={"insert": (1650, 250)})
+    space.add_line((1200, 0), (2100, 0), dxfattribs={"layer": "A-DOOR"})
+    _table(space, "M01", 900)
+    doc.saveas(drawing)
+
+    model = run(drawing)
+
+    TumoModel.model_validate(model)
+    assert run(drawing) == model
+    wall, door = model["elements"]
+    assert wall["geometry"] == {"kind": "line", "start": [0, 0], "end": [4000, 0]}
+    assert len(wall["source"]["handles"]) == 4
+    assert "opening:verified_wall_gap" in wall["evidence"]
+    assert "wall_pair" not in door
+    assert door["host"] == wall["id"]
+    assert door["geometry"]["at"] == [1650, 0]

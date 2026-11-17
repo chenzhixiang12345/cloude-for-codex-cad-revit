@@ -85,7 +85,62 @@ def _opening_schedules(drawing, root, inline_items, issue):
     return rows, evidence, inline_handles
 
 
-def _add_openings(model, items, sheet_items, drawing, root, issue):
+def _restore_opening_hosts(model, candidates, hosts, issue):
+    pairs = Counter(wall for candidate in candidates for wall in candidate.get("wall_pair", ()))
+    remapped = {}
+    rebuilt = []
+    accepted = []
+    for candidate in candidates:
+        pair = candidate.pop("wall_pair", None)
+        if pair:
+            first, second = (hosts[identifier] for identifier in pair)
+            if (any(pairs[identifier] > 1 for identifier in pair)
+                    or first["type"].get("material") != second["type"].get("material")):
+                issue("两侧墙无法唯一合并为洞口宿主。请对照墙端和材料。", at=candidate["geometry"]["at"])
+                continue
+            start, end = first["geometry"]["start"], first["geometry"]["end"]
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            length = math.hypot(dx, dy)
+            ux, uy = dx / length, dy / length
+            distances = [0, length, *((x - start[0]) * ux + (y - start[1]) * uy
+                                      for x, y in (second["geometry"]["start"], second["geometry"]["end"]))]
+            a, b = sorted(rounded((start[0] + distance * ux, start[1] + distance * uy))
+                          for distance in (min(distances), max(distances)))
+            geometry = {"kind": "line", "start": a, "end": b}
+            sheet = first["source"]["sheet"]
+            identifier = _stable_id("W", sheet, geometry)
+            if identifier in hosts:
+                issue("合并后的宿主墙与现有墙重复。请对照原图。", at=candidate["geometry"]["at"])
+                continue
+            evidence = sorted(set(first["evidence"] + second["evidence"] + ["opening:verified_wall_gap"]))
+            handles = sorted(set(first["source"]["handles"] + second["source"]["handles"]))
+            wall = {**first, "geometry": geometry, "id": identifier, "evidence": evidence,
+                    "confidence": min(first["confidence"], second["confidence"]),
+                    "source": {"sheet": sheet, "handles": handles}}
+            for old in pair:
+                remapped[old] = identifier
+            rebuilt.append(wall)
+            hosts[identifier] = wall
+            candidate["host"] = identifier
+        accepted.append(candidate)
+
+    if remapped:
+        model["elements"] = [element for element in model["elements"] if element["id"] not in remapped] + rebuilt
+        relations = []
+        for relation in model["relations"]:
+            updated = {**relation, **{key: remapped.get(relation[key], relation[key]) for key in ("a", "b")}}
+            if updated not in relations:
+                relations.append(updated)
+        model["relations"] = relations
+        for entry in model["issues"]:
+            if (identifier := entry.get("element")) in remapped:
+                entry["element"] = remapped[identifier]
+    for candidate in accepted:
+        candidate["host"] = remapped.get(candidate["host"], candidate["host"])
+    return accepted
+
+
+def _add_openings(model, items, sheet_items, drawing, root, rules, issue):
     schedule, evidence, inline_handles = _opening_schedules(drawing, root, sheet_items, issue)
     if not schedule:
         return
@@ -94,12 +149,12 @@ def _add_openings(model, items, sheet_items, drawing, root, issue):
         item for item in items
         if item.kind != "text" or not item.handles or not set(item.handles) <= inline_handles
     )
-    candidates, issues = recognize_openings(plan_items, hosts.values(), schedule)
+    candidates, issues = recognize_openings(plan_items, hosts.values(), schedule, wall_pair_rules=rules["opening"]["wall_pair"])
     for entry in issues:
         issue(entry["message"], at=entry["at"])
 
     sheet = model["sheets"][0]
-    for candidate in candidates:
+    for candidate in _restore_opening_hosts(model, candidates, hosts, issue):
         at = candidate["geometry"]["at"]
         host = hosts[candidate["host"]]
         mark = candidate["type"]["mark"]
@@ -292,7 +347,7 @@ def run(input_path: Path, bounds: Bounds | None = None) -> dict:
                 for identifier in sorted({column["id"] for column in joined if "id" in column})
             )
     if subject == "arch":
-        _add_openings(model, items, level_items, drawing, root, issue)
+        _add_openings(model, items, level_items, drawing, root, rules, issue)
         _add_rooms(model, items, rules, issue)
         _add_slabs(model, items, rules, issue)
     for category, count in (("轴网", len(model["grids"])), ("柱", len(columns)), ("墙", len(walls))):

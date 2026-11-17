@@ -42,3 +42,10 @@ wall:
 level:
   default_height: 3000
   row_tolerance: 180
+opening:
+  wall_pair:
+    endpoint_tolerance: 30
+    width_tolerance: 30
+    axis_tolerance: 8
+    thickness_tolerance: 1
+    direction_tolerance_deg: 1

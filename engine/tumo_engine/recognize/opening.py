@@ -1,8 +1,10 @@
 """Match scheduled openings to local DXF evidence and a single existing wall."""
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from itertools import product
+from math import dist
 import re
 from unicodedata import normalize
 
@@ -22,6 +24,8 @@ class _Host:
     id: str
     centerline: Segment
     thickness: float
+    level_span: tuple
+    sheet: str | None
 
 
 def _mark(text):
@@ -47,7 +51,10 @@ def _hosts(walls):
             continue
         start, end = tuple(geometry["start"]), tuple(geometry["end"])
         if thickness and thickness > 0 and start != end:
-            yield _Host(identifier, Segment(start, end, ()), thickness)
+            level_span = (wall.get("base_level"), wall.get("top_level"),
+                          wall.get("base_offset") or 0, wall.get("top_offset") or 0)
+            yield _Host(identifier, Segment(start, end, ()), thickness, level_span,
+                        (wall.get("source") or {}).get("sheet"))
 
 
 def _center_on_host(symbol, host, host_tolerance, angle_tolerance):
@@ -67,6 +74,51 @@ def _center_on_host(symbol, host, host_tolerance, angle_tolerance):
     return world((low + high) / 2, offset, axis)
 
 
+def _matching_wall_pairs(symbol, hosts, width, host_tolerance, rules):
+    """Match a measured gap to the actual opposing endpoints of two walls."""
+    axis = symbol.axis
+    low, high = symbol.projected(axis)
+    endpoint_tolerance = rules["endpoint_tolerance"]
+    left, right = [], []
+    for host in hosts:
+        if not host.level_span[0]:
+            continue
+        line = host.centerline
+        wall_axis = line.axis
+        if not parallel(axis, wall_axis, rules["direction_tolerance_deg"]):
+            continue
+        normal = (-wall_axis[1], wall_axis[0])
+        offset = line.offset(wall_axis)
+        if any(abs(dot(point, normal) - offset) > host.thickness / 2 + host_tolerance
+               for point in (symbol.a, symbol.b)):
+            continue
+
+        first, last = sorted((line.a, line.b), key=lambda point: dot(point, axis))
+        start, end = dot(first, axis), dot(last, axis)
+        if start < low - endpoint_tolerance and abs(end - low) <= endpoint_tolerance:
+            left.append((host, last))
+        if end > high + endpoint_tolerance and abs(start - high) <= endpoint_tolerance:
+            right.append((host, first))
+
+    for (first, start), (second, end) in product(left, right):
+        if (first.id == second.id or first.level_span != second.level_span or first.sheet != second.sheet
+                or abs(first.thickness - second.thickness) > rules["thickness_tolerance"]
+                or abs(dist(start, end) - width) > rules["width_tolerance"]):
+            continue
+        line = first.centerline
+        wall_axis = line.axis
+        normal = (-wall_axis[1], wall_axis[0])
+        offset = line.offset(wall_axis)
+        if any(abs(dot(point, normal) - offset) > rules["axis_tolerance"]
+               for point in (second.centerline.a, second.centerline.b)):
+            continue
+        if not parallel(wall_axis, second.centerline.axis, rules["direction_tolerance_deg"]):
+            continue
+        # Anchoring to the wall endpoints gives coincident symbol strokes one match.
+        at = tuple(rounded(((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)))
+        yield tuple(sorted((first.id, second.id))), at
+
+
 def _issue(label, mark, code, description):
     return {"code": code, "mark": mark, "message": f"{mark}：{description}", "at": rounded(label.points[0])}
 
@@ -80,13 +132,16 @@ def recognize_openings(
     width_tolerance: float = 50,
     host_tolerance: float = 25,
     angle_tolerance: float = 5,
+    wall_pair_rules: Mapping[str, float] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Return opening candidates and located issues for exact scheduled tags.
 
     Only measured line segments on explicit door/window layers are used.
     Width and position tolerances are in millimeters. Each host must have an
-    ID and a centerline spanning the measured opening. The caller supplies
-    each candidate's final ID, floor, and sheet source.
+    ID and a centerline spanning the measured opening. When wall pair rules
+    are supplied, a unique pair may instead return an internal ``wall_pair``
+    with no ``host``; the caller must reconcile the pair before export.
+    The caller supplies each candidate's final ID, floor, and sheet source.
     """
     dimensions = defaultdict(set)
     for row in schedule:
@@ -118,12 +173,20 @@ def recognize_openings(
             issues.append(_issue(label, mark, "opening_evidence_missing", "标注附近没有尺寸相符的洞口线。"))
             continue
 
+        nearby_walls = [
+            (symbol, category, list(wall_index.nearby(symbol.geometry, maximum_half_thickness + host_tolerance)))
+            for symbol, category in nearby
+        ]
         matches = defaultdict(list)
-        for symbol, category in nearby:
-            for host in wall_index.nearby(symbol.geometry, maximum_half_thickness + host_tolerance):
+        for symbol, category, possible in nearby_walls:
+            for host in possible:
                 center = _center_on_host(symbol, host, host_tolerance, angle_tolerance)
                 if center is not None:
-                    matches[(host.id, category, tuple(rounded(center)))].extend(symbol.primitives)
+                    matches[((host.id,), category, tuple(rounded(center)))].extend(symbol.primitives)
+        if not matches and wall_pair_rules is not None:
+            for symbol, category, possible in nearby_walls:
+                for pair, at in _matching_wall_pairs(symbol, possible, width, host_tolerance, wall_pair_rules):
+                    matches[(pair, category, at)].extend(symbol.primitives)
         if not matches:
             issues.append(_issue(label, mark, "host_missing", "没有找到覆盖该洞口的宿主墙。"))
             continue
@@ -150,11 +213,16 @@ def recognize_openings(
             "category": category,
             "type": {"mark": mark, "width": width, "height": height},
             "geometry": {"kind": "point", "at": list(at)},
-            "host": host,
             "confidence": 0.8,
-            "evidence": ["schedule:exact_mark", "line:width_match", "wall:unique_host"],
+            "evidence": ["schedule:exact_mark", "line:width_match"],
             "handles": handles,
         }
+        if len(host) == 1:
+            candidate["host"] = host[0]
+            candidate["evidence"].append("wall:unique_host")
+        else:
+            candidate["wall_pair"] = list(host)
+            candidate["evidence"].append("wall:paired_ends")
         if sill is not None:
             candidate["sill_height"] = sill
         result.append(candidate)
