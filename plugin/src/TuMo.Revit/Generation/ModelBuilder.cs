@@ -41,6 +41,7 @@ internal static class ModelBuilder
                 Top: levels.Values.Max(level => level.ProjectElevation) + gridPadding);
             foreach (var grid in model.Grids)
                 CreateGrid(document, grid, existingGrids, ids, model, sheets, gridExtents);
+            var originNotice = ProjectOrigin.Verify(document, model, existingGrids, log);
 
             var types = new ModelTypes(document, log);
             var dimensions = candidates.ToDictionary(e => e.Id, e => GetExtent(e, levels, defaultBase));
@@ -67,7 +68,7 @@ internal static class ModelBuilder
             if (transaction.Commit() != TransactionStatus.Committed)
                 throw new InvalidOperationException("Revit 无法提交模型。请查看日志。");
             return $"标高 {levels.Count}，轴网 {model.Grids.Length}，柱 {candidates.Count(e => e.Category == "column")}，墙 {candidates.Count(e => e.Category == "wall")}。"
-                + openingReport + interiorReport;
+                + openingReport + interiorReport + (originNotice == null ? "" : $"\n{originNotice}");
         }
         catch
         {
