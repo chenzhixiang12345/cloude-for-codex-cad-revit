@@ -10,7 +10,8 @@ from ezdxf import bbox
 from tumo_engine.io.dxf_reader import read_dxf
 from tumo_engine.preprocess import Bounds, entity_visible, hidden_layer_names, layer_key, point, viewport_bounds
 
-TITLE = re.compile(r"(?:平面图|立面图|剖面图|详图|图纸目录|图纸清单|floor\s*plan|schedule)", re.I)
+PLAN_TITLE = r"(?:平面(?:施工)?图|[梁板]平法施工图\s*$|floor\s*plan)"
+TITLE = re.compile(rf"(?:{PLAN_TITLE}|立面图|剖面图|详图|图纸目录|图纸清单|schedule)", re.I)
 STANDARD = re.compile(r"标准层|典型层|(?:[一二三四五六七八九十\d]+)\s*[-~～至—–]\s*[一二三四五六七八九十\d]+\s*层|typical", re.I)
 NUMBER = re.compile(r"(?:(?:图号|DRAWING\s*NO\.?)\s*[:：]?\s*)?([A-Z]{1,3}[-.]?\d{2,5}(?:[-.]\d{1,4})?)", re.I)
 
@@ -39,9 +40,9 @@ def discipline(path):
 def sheet_kind(name):
     if re.search(r"(?:目录|图纸清单|index)", name, re.I):
         return "directory"
-    if re.search(r"(?:基础|屋顶|机房|屋面).*(?:平面图|plan)", name, re.I):
+    if re.search(rf"(?:基础|屋顶|机房|屋面).*(?:{PLAN_TITLE}|plan)", name, re.I):
         return "special_plan"
-    if re.search(r"(?:平面图|floor\s*plan)", name, re.I):
+    if re.search(PLAN_TITLE, name, re.I):
         return "floor_plan"
     if re.search(r"(?:立面|剖面|elevation|section)", name, re.I):
         return "section_elevation"
